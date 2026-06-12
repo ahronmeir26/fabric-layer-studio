@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 const TILE_SIZE_MIN = 0.001;
@@ -35,28 +36,42 @@ const LIGHT_STEP = 0.05;
 const MATERIAL_MIN = 0;
 const MATERIAL_MAX = 1;
 const MATERIAL_STEP = 0.01;
+const FABRIC_TEXTURE_CONTRAST = 1.56;
+const FABRIC_TEXTURE_BRIGHTNESS = -22;
 const ASSET_DB_NAME = "fabric-bake-assets";
 const ASSET_DB_VERSION = 1;
 const ASSET_STORE_NAME = "uploads";
 const VIEW_OPTIONS_STORAGE_KEY = "fabric-bake-view-options";
 const LAYERS_STORAGE_KEY = "fabric-bake-layers";
+const VIEW_OPTIONS_VERSION = 6;
 const DEFAULT_LAYER_ID = "preview-layer";
 const DEFAULT_FABRIC_NAME = "Default Herringbone";
 const DEFAULT_FABRIC_URL = "/local-assets/fabrics/default-herringbone-fabric.png";
 
 const DEFAULT_VIEW_OPTIONS = {
-  darkMode: true,
-  grid: true,
+  viewPresetVersion: VIEW_OPTIONS_VERSION,
+  darkMode: false,
+  grid: false,
   autoRotate: false,
   transparentBackground: false,
   bakeInBrowser: true,
   fabricPreview: true,
-  exposure: 1,
-  lightIntensity: 1.15,
-  fabricTileWidth: 0.25,
-  fabricTileHeight: 0.25,
-  fabricRoughness: 0.92,
+  exposure: 0.88,
+  lightIntensity: 1,
+  fabricTileWidth: 0.3,
+  fabricTileHeight: 0.3,
+  fabricRoughness: 0.9,
   fabricMetalness: 0,
+};
+
+const STUDIO_VIEW_OVERRIDES = {
+  viewPresetVersion: VIEW_OPTIONS_VERSION,
+  darkMode: false,
+  grid: false,
+  exposure: DEFAULT_VIEW_OPTIONS.exposure,
+  lightIntensity: DEFAULT_VIEW_OPTIONS.lightIntensity,
+  fabricTileWidth: DEFAULT_VIEW_OPTIONS.fabricTileWidth,
+  fabricTileHeight: DEFAULT_VIEW_OPTIONS.fabricTileHeight,
 };
 
 const DEFAULT_LAYER = {
@@ -160,7 +175,7 @@ function makeDownloadName(activeLayerName) {
 }
 
 function normalizeViewOptions(options = {}) {
-  return {
+  const normalizedOptions = {
     ...DEFAULT_VIEW_OPTIONS,
     ...options,
     exposure: Number.isFinite(Number(options.exposure))
@@ -180,6 +195,15 @@ function normalizeViewOptions(options = {}) {
       ? clampMaterialValue(Number(options.fabricMetalness))
       : DEFAULT_VIEW_OPTIONS.fabricMetalness,
   };
+
+  if (Number(options.viewPresetVersion) !== VIEW_OPTIONS_VERSION) {
+    return {
+      ...normalizedOptions,
+      ...STUDIO_VIEW_OVERRIDES,
+    };
+  }
+
+  return normalizedOptions;
 }
 
 function normalizeLayer(layer, fallbackIndex = 0) {
@@ -343,6 +367,42 @@ function disposeObject(root, materialSkipSet = new Set()) {
   });
 }
 
+function createAdjustedFabricTexture(sourceTexture) {
+  const image = sourceTexture.image;
+  const width = image?.naturalWidth || image?.videoWidth || image?.width;
+  const height = image?.naturalHeight || image?.videoHeight || image?.height;
+
+  if (!image || !width || !height) {
+    return sourceTexture;
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return sourceTexture;
+
+  context.drawImage(image, 0, 0, width, height);
+  const imageData = context.getImageData(0, 0, width, height);
+  const { data } = imageData;
+
+  for (let index = 0; index < data.length; index += 4) {
+    for (let channel = 0; channel < 3; channel += 1) {
+      const nextValue =
+        (data[index + channel] - 128) * FABRIC_TEXTURE_CONTRAST +
+        128 +
+        FABRIC_TEXTURE_BRIGHTNESS;
+      data[index + channel] = Math.max(0, Math.min(255, nextValue));
+    }
+  }
+
+  context.putImageData(imageData, 0, 0);
+  sourceTexture.dispose();
+
+  return new THREE.CanvasTexture(canvas);
+}
+
 function App() {
   const viewportRef = useRef(null);
   const layerFileInputRef = useRef(null);
@@ -404,9 +464,9 @@ function App() {
 
     const container = viewportRef.current;
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0f1418);
+    scene.background = new THREE.Color(0xefefed);
 
-    const camera = new THREE.PerspectiveCamera(38, 1, 0.01, 1000);
+    const camera = new THREE.PerspectiveCamera(28, 1, 0.01, 1000);
     camera.position.set(2.8, 1.6, 3.2);
 
     const renderer = new THREE.WebGLRenderer({
@@ -420,27 +480,41 @@ function App() {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     container.appendChild(renderer.domElement);
 
+    const pmremGenerator = new THREE.PMREMGenerator(renderer);
+    const studioEnvironment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+    scene.environment = studioEnvironment;
+
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.07;
     controls.autoRotateSpeed = 1.2;
 
-    const baseKeyIntensity = 2.25;
-    const baseFillIntensity = 1.2;
-    const baseAmbientIntensity = 1.45;
+    const baseKeyIntensity = 1.44;
+    const baseFillIntensity = 0.74;
+    const baseFrontIntensity = 0.42;
+    const baseRimIntensity = 0.58;
+    const baseAmbientIntensity = 0.56;
 
     const key = new THREE.DirectionalLight(0xffffff, baseKeyIntensity);
-    key.position.set(4, 6, 5);
+    key.position.set(-3.4, 5.6, 4.4);
     scene.add(key);
 
-    const fill = new THREE.DirectionalLight(0xc6e7ff, baseFillIntensity);
-    fill.position.set(-4, 2, -4);
+    const fill = new THREE.DirectionalLight(0xffffff, baseFillIntensity);
+    fill.position.set(4.4, 3.6, 4.8);
     scene.add(fill);
 
-    const ambient = new THREE.HemisphereLight(0xffffff, 0x63747d, baseAmbientIntensity);
+    const front = new THREE.DirectionalLight(0xffffff, baseFrontIntensity);
+    front.position.set(0, 2.6, 6.4);
+    scene.add(front);
+
+    const rim = new THREE.DirectionalLight(0xe8eef2, baseRimIntensity);
+    rim.position.set(-3.2, 4.6, -4.8);
+    scene.add(rim);
+
+    const ambient = new THREE.HemisphereLight(0xffffff, 0xd8d5cf, baseAmbientIntensity);
     scene.add(ambient);
 
-    const grid = new THREE.GridHelper(10, 20, 0x5d6d74, 0x27333a);
+    const grid = new THREE.GridHelper(10, 20, 0x405760, 0x1b2b31);
     grid.position.y = -0.01;
     scene.add(grid);
 
@@ -448,11 +522,12 @@ function App() {
     scene.add(modelRoot);
 
     const fabricOverlayMaterial = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
+      color: 0x8f908a,
       roughness: viewOptions.fabricRoughness,
       metalness: viewOptions.fabricMetalness,
-      transparent: true,
-      opacity: 0.92,
+      envMapIntensity: 0.16,
+      transparent: false,
+      opacity: 1,
     });
     const sharedMaterials = new Set([fabricOverlayMaterial.uuid]);
     const layerObjects = new Map();
@@ -507,12 +582,12 @@ function App() {
       const center = box.getCenter(new THREE.Vector3());
       const maxSize = Math.max(size.x, size.y, size.z) || 1;
       const fitDistance = maxSize / (2 * Math.tan((camera.fov * Math.PI) / 360));
-      const direction = new THREE.Vector3(0.75, 0.42, 0.86).normalize();
+      const direction = new THREE.Vector3(0, 0.16, 1).normalize();
 
       controls.target.copy(center);
       camera.near = Math.max(maxSize / 1000, 0.001);
       camera.far = Math.max(maxSize * 100, 100);
-      camera.position.copy(center).add(direction.multiplyScalar(fitDistance * 1.45));
+      camera.position.copy(center).add(direction.multiplyScalar(fitDistance * 1.18));
       camera.updateProjectionMatrix();
       controls.update();
 
@@ -690,7 +765,7 @@ function App() {
       exportViewport,
       updateOptions(options) {
         currentOptions = { ...options };
-        const backgroundColor = options.darkMode ? 0x0f1418 : 0xf4f1ea;
+        const backgroundColor = options.darkMode ? 0x0d1317 : 0xefefed;
         scene.background = options.transparentBackground ? null : new THREE.Color(backgroundColor);
         renderer.setClearColor(backgroundColor, options.transparentBackground ? 0 : 1);
         grid.visible = options.grid;
@@ -698,6 +773,8 @@ function App() {
         renderer.toneMappingExposure = options.exposure;
         key.intensity = baseKeyIntensity * options.lightIntensity;
         fill.intensity = baseFillIntensity * options.lightIntensity;
+        front.intensity = baseFrontIntensity * options.lightIntensity;
+        rim.intensity = baseRimIntensity * options.lightIntensity;
         ambient.intensity = baseAmbientIntensity * options.lightIntensity;
         fabricOverlayMaterial.roughness = options.fabricRoughness;
         fabricOverlayMaterial.metalness = options.fabricMetalness;
@@ -713,7 +790,7 @@ function App() {
         new THREE.TextureLoader().load(
           url,
           (texture) => {
-            applyFabricTexture(texture);
+            applyFabricTexture(createAdjustedFabricTexture(texture));
             layerObjects.forEach((record) => {
               const layer = currentLayers.find((item) => item.id === record.object.userData.layerId);
               if (layer) setLayerFabric(record.object, layer.bakeFabric);
@@ -739,6 +816,8 @@ function App() {
       layerObjects.clear();
       fabricOverlayMaterial.map?.dispose();
       fabricOverlayMaterial.dispose();
+      studioEnvironment.dispose();
+      pmremGenerator.dispose();
       renderer.dispose();
       controls.dispose();
       container.removeChild(renderer.domElement);
@@ -926,17 +1005,34 @@ function App() {
 
   function updateTileSize(key, value) {
     const nextValue = clampTileSize(value);
-    setViewOptions((current) => ({ ...current, [key]: nextValue }));
-    setTileInputs((current) => ({ ...current, [key]: formatTileSize(nextValue) }));
+    setViewOptions((current) => ({
+      ...current,
+      fabricTileWidth: nextValue,
+      fabricTileHeight: nextValue,
+    }));
+    setTileInputs((current) => ({
+      ...current,
+      fabricTileWidth: formatTileSize(nextValue),
+      fabricTileHeight: formatTileSize(nextValue),
+    }));
   }
 
   function handleTileInputChange(key, value) {
-    setTileInputs((current) => ({ ...current, [key]: value }));
+    setTileInputs((current) => ({
+      ...current,
+      fabricTileWidth: value,
+      fabricTileHeight: value,
+    }));
     if (value === "" || value === "." || value === "-") return;
 
     const nextValue = Number(value);
     if (Number.isFinite(nextValue)) {
-      setViewOptions((current) => ({ ...current, [key]: clampTileSize(nextValue) }));
+      const linkedValue = clampTileSize(nextValue);
+      setViewOptions((current) => ({
+        ...current,
+        fabricTileWidth: linkedValue,
+        fabricTileHeight: linkedValue,
+      }));
     }
   }
 
