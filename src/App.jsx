@@ -47,6 +47,9 @@ const VIEW_OPTIONS_VERSION = 6;
 const DEFAULT_LAYER_ID = "preview-layer";
 const DEFAULT_FABRIC_NAME = "Default Herringbone";
 const DEFAULT_FABRIC_URL = "/local-assets/fabrics/default-herringbone-fabric.png";
+const FABRIC_ASSET_KEY = "fabric";
+const NORMAL_MAP_ASSET_KEY = "fabric-normal-map";
+const ROUGHNESS_MAP_ASSET_KEY = "fabric-roughness-map";
 
 const DEFAULT_VIEW_OPTIONS = {
   viewPresetVersion: VIEW_OPTIONS_VERSION,
@@ -407,6 +410,8 @@ function App() {
   const viewportRef = useRef(null);
   const layerFileInputRef = useRef(null);
   const textureInputRef = useRef(null);
+  const normalMapInputRef = useRef(null);
+  const roughnessMapInputRef = useRef(null);
   const sceneApiRef = useRef(null);
   const pendingLayerUploadRef = useRef(DEFAULT_LAYER_ID);
   const layersRef = useRef([]);
@@ -427,6 +432,10 @@ function App() {
   });
   const [fabricTextureName, setFabricTextureName] = useState(DEFAULT_FABRIC_NAME);
   const [fabricTexture, setFabricTexture] = useState(null);
+  const [normalMapName, setNormalMapName] = useState("");
+  const [normalMapTexture, setNormalMapTexture] = useState(null);
+  const [roughnessMapName, setRoughnessMapName] = useState("");
+  const [roughnessMapTexture, setRoughnessMapTexture] = useState(null);
 
   const selectedLayer = useMemo(
     () => layers.find((layer) => layer.id === selectedLayerId) ?? layers[0] ?? DEFAULT_LAYER,
@@ -623,23 +632,45 @@ function App() {
       };
     }
 
-    function applyTileRepeat() {
-      if (!fabricOverlayMaterial.map) return;
-      const repeat = getTileRepeat();
-      fabricOverlayMaterial.map.repeat.set(repeat.x, repeat.y);
-      fabricOverlayMaterial.map.needsUpdate = true;
+    function getFabricTextures() {
+      return [
+        fabricOverlayMaterial.map,
+        fabricOverlayMaterial.normalMap,
+        fabricOverlayMaterial.roughnessMap,
+      ].filter(Boolean);
     }
 
-    function applyFabricTexture(texture) {
-      texture.colorSpace = THREE.SRGBColorSpace;
+    function applyTileRepeat() {
+      const repeat = getTileRepeat();
+      getFabricTextures().forEach((texture) => {
+        texture.repeat.set(repeat.x, repeat.y);
+        texture.needsUpdate = true;
+      });
+    }
+
+    function prepareFabricTexture(texture, { colorSpace = THREE.NoColorSpace } = {}) {
+      texture.colorSpace = colorSpace;
       texture.wrapS = THREE.RepeatWrapping;
       texture.wrapT = THREE.RepeatWrapping;
       texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
       texture.generateMipmaps = true;
       texture.minFilter = THREE.LinearMipmapLinearFilter;
       texture.magFilter = THREE.LinearFilter;
+      return texture;
+    }
+
+    function applyFabricTexture(texture) {
+      const nextTexture = prepareFabricTexture(texture, { colorSpace: THREE.SRGBColorSpace });
       if (fabricOverlayMaterial.map) fabricOverlayMaterial.map.dispose();
-      fabricOverlayMaterial.map = texture;
+      fabricOverlayMaterial.map = nextTexture;
+      applyTileRepeat();
+      fabricOverlayMaterial.needsUpdate = true;
+    }
+
+    function applyFabricMap(slot, texture) {
+      const nextTexture = prepareFabricTexture(texture);
+      if (fabricOverlayMaterial[slot]) fabricOverlayMaterial[slot].dispose();
+      fabricOverlayMaterial[slot] = nextTexture;
       applyTileRepeat();
       fabricOverlayMaterial.needsUpdate = true;
     }
@@ -801,6 +832,38 @@ function App() {
           () => URL.revokeObjectURL(url),
         );
       },
+      loadFabricNormalMap(file) {
+        const url = URL.createObjectURL(file);
+        new THREE.TextureLoader().load(
+          url,
+          (texture) => {
+            applyFabricMap("normalMap", texture);
+            layerObjects.forEach((record) => {
+              const layer = currentLayers.find((item) => item.id === record.object.userData.layerId);
+              if (layer) setLayerFabric(record.object, layer.bakeFabric);
+            });
+            URL.revokeObjectURL(url);
+          },
+          undefined,
+          () => URL.revokeObjectURL(url),
+        );
+      },
+      loadFabricRoughnessMap(file) {
+        const url = URL.createObjectURL(file);
+        new THREE.TextureLoader().load(
+          url,
+          (texture) => {
+            applyFabricMap("roughnessMap", texture);
+            layerObjects.forEach((record) => {
+              const layer = currentLayers.find((item) => item.id === record.object.userData.layerId);
+              if (layer) setLayerFabric(record.object, layer.bakeFabric);
+            });
+            URL.revokeObjectURL(url);
+          },
+          undefined,
+          () => URL.revokeObjectURL(url),
+        );
+      },
     };
 
     resize();
@@ -815,6 +878,8 @@ function App() {
       layerObjects.forEach((record) => disposeObject(record.object, sharedMaterials));
       layerObjects.clear();
       fabricOverlayMaterial.map?.dispose();
+      fabricOverlayMaterial.normalMap?.dispose();
+      fabricOverlayMaterial.roughnessMap?.dispose();
       fabricOverlayMaterial.dispose();
       studioEnvironment.dispose();
       pmremGenerator.dispose();
@@ -830,8 +895,10 @@ function App() {
 
     async function restoreUploads() {
       try {
-        const [storedFabric, storedLayers] = await Promise.all([
-          readStoredAsset("fabric"),
+        const [storedFabric, storedNormalMap, storedRoughnessMap, storedLayers] = await Promise.all([
+          readStoredAsset(FABRIC_ASSET_KEY),
+          readStoredAsset(NORMAL_MAP_ASSET_KEY),
+          readStoredAsset(ROUGHNESS_MAP_ASSET_KEY),
           Promise.all(
             getStoredLayerMetadata().map(async (layer) => {
               if (!layer.assetKey) return layer;
@@ -871,6 +938,22 @@ function App() {
             name: DEFAULT_FABRIC_NAME,
           });
         }
+
+        if (storedNormalMap?.blob) {
+          setNormalMapName(storedNormalMap.name || "Stored normal map");
+          setNormalMapTexture({
+            blob: storedNormalMap.blob,
+            name: storedNormalMap.name || "Stored normal map",
+          });
+        }
+
+        if (storedRoughnessMap?.blob) {
+          setRoughnessMapName(storedRoughnessMap.name || "Stored roughness map");
+          setRoughnessMapTexture({
+            blob: storedRoughnessMap.blob,
+            name: storedRoughnessMap.name || "Stored roughness map",
+          });
+        }
       } catch (error) {
         console.error("Could not restore uploaded files.", error);
       }
@@ -898,6 +981,16 @@ function App() {
     if (!sceneReady || !fabricTexture?.blob) return;
     sceneApiRef.current?.loadFabricTexture(fabricTexture.blob);
   }, [fabricTexture, sceneReady]);
+
+  useEffect(() => {
+    if (!sceneReady || !normalMapTexture?.blob) return;
+    sceneApiRef.current?.loadFabricNormalMap(normalMapTexture.blob);
+  }, [normalMapTexture, sceneReady]);
+
+  useEffect(() => {
+    if (!sceneReady || !roughnessMapTexture?.blob) return;
+    sceneApiRef.current?.loadFabricRoughnessMap(roughnessMapTexture.blob);
+  }, [roughnessMapTexture, sceneReady]);
 
   useEffect(() => {
     return () => {
@@ -946,8 +1039,26 @@ function App() {
     if (!file) return;
     setFabricTextureName(file.name);
     setFabricTexture({ name: file.name, blob: file });
-    saveStoredAsset("fabric", file).catch((error) => {
+    saveStoredAsset(FABRIC_ASSET_KEY, file).catch((error) => {
       console.error("Could not save fabric upload.", error);
+    });
+  }
+
+  function handleNormalMapFile(file) {
+    if (!file) return;
+    setNormalMapName(file.name);
+    setNormalMapTexture({ name: file.name, blob: file });
+    saveStoredAsset(NORMAL_MAP_ASSET_KEY, file).catch((error) => {
+      console.error("Could not save normal map upload.", error);
+    });
+  }
+
+  function handleRoughnessMapFile(file) {
+    if (!file) return;
+    setRoughnessMapName(file.name);
+    setRoughnessMapTexture({ name: file.name, blob: file });
+    saveStoredAsset(ROUGHNESS_MAP_ASSET_KEY, file).catch((error) => {
+      console.error("Could not save roughness map upload.", error);
     });
   }
 
@@ -1126,6 +1237,26 @@ function App() {
           accept="image/*"
           onChange={(event) => {
             handleFabricFile(event.target.files?.[0]);
+            event.target.value = "";
+          }}
+        />
+        <input
+          ref={normalMapInputRef}
+          className="hidden-input"
+          type="file"
+          accept="image/*"
+          onChange={(event) => {
+            handleNormalMapFile(event.target.files?.[0]);
+            event.target.value = "";
+          }}
+        />
+        <input
+          ref={roughnessMapInputRef}
+          className="hidden-input"
+          type="file"
+          accept="image/*"
+          onChange={(event) => {
+            handleRoughnessMapFile(event.target.files?.[0]);
             event.target.value = "";
           }}
         />
@@ -1358,7 +1489,23 @@ function App() {
                 onClick={() => textureInputRef.current?.click()}
               >
                 <ImagePlus size={17} />
-                <span>{fabricTextureName || "Load Texture"}</span>
+                <span>{fabricTextureName || "Load Color"}</span>
+              </button>
+              <button
+                className="command-button full"
+                type="button"
+                onClick={() => normalMapInputRef.current?.click()}
+              >
+                <ImagePlus size={17} />
+                <span>{normalMapName || "Load Normal Map"}</span>
+              </button>
+              <button
+                className="command-button full"
+                type="button"
+                onClick={() => roughnessMapInputRef.current?.click()}
+              >
+                <ImagePlus size={17} />
+                <span>{roughnessMapName || "Load Roughness Map"}</span>
               </button>
               <label className="toggle-row">
                 <Check size={18} />
