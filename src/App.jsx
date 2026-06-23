@@ -36,20 +36,20 @@ const LIGHT_STEP = 0.05;
 const MATERIAL_MIN = 0;
 const MATERIAL_MAX = 1;
 const MATERIAL_STEP = 0.01;
-const FABRIC_TEXTURE_CONTRAST = 1.56;
-const FABRIC_TEXTURE_BRIGHTNESS = -22;
+const AUTO_NORMAL_STRENGTH = 0.65;
 const ASSET_DB_NAME = "fabric-bake-assets";
 const ASSET_DB_VERSION = 1;
 const ASSET_STORE_NAME = "uploads";
 const VIEW_OPTIONS_STORAGE_KEY = "fabric-bake-view-options";
 const LAYERS_STORAGE_KEY = "fabric-bake-layers";
-const VIEW_OPTIONS_VERSION = 6;
+const VIEW_OPTIONS_VERSION = 8;
 const DEFAULT_LAYER_ID = "preview-layer";
 const DEFAULT_FABRIC_NAME = "Default Herringbone";
 const DEFAULT_FABRIC_URL = "/local-assets/fabrics/default-herringbone-fabric.png";
 const FABRIC_ASSET_KEY = "fabric";
 const NORMAL_MAP_ASSET_KEY = "fabric-normal-map";
 const ROUGHNESS_MAP_ASSET_KEY = "fabric-roughness-map";
+const METALNESS_MAP_ASSET_KEY = "fabric-metalness-map";
 
 const DEFAULT_VIEW_OPTIONS = {
   viewPresetVersion: VIEW_OPTIONS_VERSION,
@@ -61,10 +61,11 @@ const DEFAULT_VIEW_OPTIONS = {
   fabricPreview: true,
   exposure: 0.88,
   lightIntensity: 1,
-  fabricTileWidth: 0.3,
-  fabricTileHeight: 0.3,
+  fabricTileWidth: 0.08,
+  fabricTileHeight: 0.08,
   fabricRoughness: 0.9,
   fabricMetalness: 0,
+  fabricSheen: 0.16,
 };
 
 const STUDIO_VIEW_OVERRIDES = {
@@ -197,6 +198,9 @@ function normalizeViewOptions(options = {}) {
     fabricMetalness: Number.isFinite(Number(options.fabricMetalness))
       ? clampMaterialValue(Number(options.fabricMetalness))
       : DEFAULT_VIEW_OPTIONS.fabricMetalness,
+    fabricSheen: Number.isFinite(Number(options.fabricSheen))
+      ? clampMaterialValue(Number(options.fabricSheen))
+      : DEFAULT_VIEW_OPTIONS.fabricSheen,
   };
 
   if (Number(options.viewPresetVersion) !== VIEW_OPTIONS_VERSION) {
@@ -370,48 +374,13 @@ function disposeObject(root, materialSkipSet = new Set()) {
   });
 }
 
-function createAdjustedFabricTexture(sourceTexture) {
-  const image = sourceTexture.image;
-  const width = image?.naturalWidth || image?.videoWidth || image?.width;
-  const height = image?.naturalHeight || image?.videoHeight || image?.height;
-
-  if (!image || !width || !height) {
-    return sourceTexture;
-  }
-
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-
-  const context = canvas.getContext("2d", { willReadFrequently: true });
-  if (!context) return sourceTexture;
-
-  context.drawImage(image, 0, 0, width, height);
-  const imageData = context.getImageData(0, 0, width, height);
-  const { data } = imageData;
-
-  for (let index = 0; index < data.length; index += 4) {
-    for (let channel = 0; channel < 3; channel += 1) {
-      const nextValue =
-        (data[index + channel] - 128) * FABRIC_TEXTURE_CONTRAST +
-        128 +
-        FABRIC_TEXTURE_BRIGHTNESS;
-      data[index + channel] = Math.max(0, Math.min(255, nextValue));
-    }
-  }
-
-  context.putImageData(imageData, 0, 0);
-  sourceTexture.dispose();
-
-  return new THREE.CanvasTexture(canvas);
-}
-
 function App() {
   const viewportRef = useRef(null);
   const layerFileInputRef = useRef(null);
   const textureInputRef = useRef(null);
   const normalMapInputRef = useRef(null);
   const roughnessMapInputRef = useRef(null);
+  const metalnessMapInputRef = useRef(null);
   const sceneApiRef = useRef(null);
   const pendingLayerUploadRef = useRef(DEFAULT_LAYER_ID);
   const layersRef = useRef([]);
@@ -436,6 +405,8 @@ function App() {
   const [normalMapTexture, setNormalMapTexture] = useState(null);
   const [roughnessMapName, setRoughnessMapName] = useState("");
   const [roughnessMapTexture, setRoughnessMapTexture] = useState(null);
+  const [metalnessMapName, setMetalnessMapName] = useState("");
+  const [metalnessMapTexture, setMetalnessMapTexture] = useState(null);
 
   const selectedLayer = useMemo(
     () => layers.find((layer) => layer.id === selectedLayerId) ?? layers[0] ?? DEFAULT_LAYER,
@@ -484,7 +455,7 @@ function App() {
       preserveDrawingBuffer: true,
     });
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMapping = THREE.NeutralToneMapping;
     renderer.toneMappingExposure = viewOptions.exposure;
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     container.appendChild(renderer.domElement);
@@ -530,17 +501,29 @@ function App() {
     const modelRoot = new THREE.Group();
     scene.add(modelRoot);
 
-    const fabricOverlayMaterial = new THREE.MeshStandardMaterial({
-      color: 0x8f908a,
+    const fabricOverlayMaterial = new THREE.MeshPhysicalMaterial({
+      color: 0xffffff,
       roughness: viewOptions.fabricRoughness,
       metalness: viewOptions.fabricMetalness,
-      envMapIntensity: 0.16,
+      sheen: viewOptions.fabricSheen,
+      sheenColor: new THREE.Color(0xffffff),
+      sheenRoughness: 0.86,
+      normalScale: new THREE.Vector2(0.24, 0.24),
+      anisotropy: 0.38,
+      anisotropyRotation: Math.PI / 2,
+      specularIntensity: 0.16,
+      specularColor: new THREE.Color(0xffffff),
+      envMapIntensity: 0.06,
       transparent: false,
       opacity: 1,
     });
     const sharedMaterials = new Set([fabricOverlayMaterial.uuid]);
     const layerObjects = new Map();
     const loadTickets = new Map();
+    const fabricBox = new THREE.Box3(
+      new THREE.Vector3(-0.5, -0.5, -0.5),
+      new THREE.Vector3(0.5, 0.5, 0.5),
+    );
     const fabricBounds = new THREE.Vector3(1, 1, 1);
     let currentOptions = { ...viewOptions };
     let currentLayers = layers;
@@ -572,6 +555,7 @@ function App() {
         return;
       }
       const size = box.getSize(new THREE.Vector3());
+      fabricBox.copy(box);
       fabricBounds.copy(size);
       applyTileRepeat();
       setModelStats({
@@ -602,6 +586,7 @@ function App() {
 
       grid.position.y = box.min.y;
       grid.scale.setScalar(Math.max(maxSize / 4, 0.5));
+      fabricBox.copy(box);
       fabricBounds.copy(size);
       applyTileRepeat();
       updateStats();
@@ -637,6 +622,7 @@ function App() {
         fabricOverlayMaterial.map,
         fabricOverlayMaterial.normalMap,
         fabricOverlayMaterial.roughnessMap,
+        fabricOverlayMaterial.metalnessMap,
       ].filter(Boolean);
     }
 
@@ -675,14 +661,155 @@ function App() {
       fabricOverlayMaterial.needsUpdate = true;
     }
 
+    function getTextureImageSize(texture) {
+      const image = texture.image;
+      return {
+        image,
+        width: image?.naturalWidth || image?.videoWidth || image?.width,
+        height: image?.naturalHeight || image?.videoHeight || image?.height,
+      };
+    }
+
+    function createCanvasFromTexture(texture) {
+      const { image, width, height } = getTextureImageSize(texture);
+      if (!image || !width || !height) return null;
+
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) return null;
+
+      context.drawImage(image, 0, 0, width, height);
+      return { canvas, context, width, height };
+    }
+
+    function createAutomaticNormalMap(sourceTexture) {
+      const source = createCanvasFromTexture(sourceTexture);
+      if (!source) return null;
+
+      const { context, width, height } = source;
+      const sourcePixels = context.getImageData(0, 0, width, height).data;
+      const heightField = new Float32Array(width * height);
+
+      for (let index = 0; index < heightField.length; index += 1) {
+        const pixelIndex = index * 4;
+        heightField[index] =
+          (sourcePixels[pixelIndex] * 0.2126 +
+            sourcePixels[pixelIndex + 1] * 0.7152 +
+            sourcePixels[pixelIndex + 2] * 0.0722) /
+          255;
+      }
+
+      const normalCanvas = document.createElement("canvas");
+      normalCanvas.width = width;
+      normalCanvas.height = height;
+      const normalContext = normalCanvas.getContext("2d");
+      if (!normalContext) return null;
+
+      const normalImage = normalContext.createImageData(width, height);
+      const normalPixels = normalImage.data;
+      const sampleHeight = (x, y) => heightField[((y + height) % height) * width + ((x + width) % width)];
+
+      for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+          const dx = (sampleHeight(x - 1, y) - sampleHeight(x + 1, y)) * AUTO_NORMAL_STRENGTH;
+          const dy = (sampleHeight(x, y - 1) - sampleHeight(x, y + 1)) * AUTO_NORMAL_STRENGTH;
+          const invLength = 1 / Math.hypot(dx, dy, 1);
+          const pixelIndex = (y * width + x) * 4;
+
+          normalPixels[pixelIndex] = Math.round((dx * invLength * 0.5 + 0.5) * 255);
+          normalPixels[pixelIndex + 1] = Math.round((dy * invLength * 0.5 + 0.5) * 255);
+          normalPixels[pixelIndex + 2] = Math.round((invLength * 0.5 + 0.5) * 255);
+          normalPixels[pixelIndex + 3] = 255;
+        }
+      }
+
+      normalContext.putImageData(normalImage, 0, 0);
+      return new THREE.CanvasTexture(normalCanvas);
+    }
+
+    function createAutomaticRoughnessMap(sourceTexture) {
+      const source = createCanvasFromTexture(sourceTexture);
+      if (!source) return null;
+
+      const { canvas, context, width, height } = source;
+      const imageData = context.getImageData(0, 0, width, height);
+      const { data } = imageData;
+
+      for (let index = 0; index < data.length; index += 4) {
+        const luminance = (data[index] * 0.2126 + data[index + 1] * 0.7152 + data[index + 2] * 0.0722) / 255;
+        const roughness = Math.round((0.82 + (1 - luminance) * 0.16) * 255);
+        data[index] = roughness;
+        data[index + 1] = roughness;
+        data[index + 2] = roughness;
+        data[index + 3] = 255;
+      }
+
+      context.putImageData(imageData, 0, 0);
+      return new THREE.CanvasTexture(canvas);
+    }
+
+    function applyGeneratedFabricUv(node) {
+      const geometry = node.geometry;
+      const position = geometry?.getAttribute("position");
+      if (!geometry || !position) return;
+      if (geometry.getAttribute("uv")) return;
+
+      if (!("originalUv" in node.userData)) {
+        node.userData.originalUv = geometry.getAttribute("uv") ?? null;
+      }
+      if (!geometry.getAttribute("normal")) geometry.computeVertexNormals();
+
+      const normal = geometry.getAttribute("normal");
+      const uv = new Float32Array(position.count * 2);
+      const boundsSize = fabricBox.getSize(new THREE.Vector3());
+      const boundsMin = fabricBox.min;
+      const worldPosition = new THREE.Vector3();
+      const worldNormal = new THREE.Vector3();
+      const normalMatrix = new THREE.Matrix3().getNormalMatrix(node.matrixWorld);
+      const horizontalSpan = Math.max(boundsSize.x, boundsSize.z, TILE_SIZE_MIN);
+      const verticalSpan = Math.max(boundsSize.y, TILE_SIZE_MIN);
+
+      for (let index = 0; index < position.count; index += 1) {
+        worldPosition.fromBufferAttribute(position, index).applyMatrix4(node.matrixWorld);
+        worldNormal.fromBufferAttribute(normal, index).applyMatrix3(normalMatrix).normalize();
+
+        if (Math.abs(worldNormal.y) > Math.abs(worldNormal.x) && Math.abs(worldNormal.y) > Math.abs(worldNormal.z)) {
+          uv[index * 2] = (worldPosition.x - boundsMin.x) / horizontalSpan;
+          uv[index * 2 + 1] = (worldPosition.z - boundsMin.z) / horizontalSpan;
+        } else if (Math.abs(worldNormal.x) > Math.abs(worldNormal.z)) {
+          uv[index * 2] = (worldPosition.z - boundsMin.z) / horizontalSpan;
+          uv[index * 2 + 1] = (worldPosition.y - boundsMin.y) / verticalSpan;
+        } else {
+          uv[index * 2] = (worldPosition.x - boundsMin.x) / horizontalSpan;
+          uv[index * 2 + 1] = (worldPosition.y - boundsMin.y) / verticalSpan;
+        }
+      }
+
+      geometry.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+    }
+
+    function restoreOriginalUv(node) {
+      if (!node.geometry || !("originalUv" in node.userData)) return;
+      if (node.userData.originalUv) {
+        node.geometry.setAttribute("uv", node.userData.originalUv);
+      } else {
+        node.geometry.deleteAttribute("uv");
+      }
+    }
+
     function setLayerFabric(object, enabled) {
+      object.updateWorldMatrix(true, true);
       object.traverse((node) => {
         if (!node.isMesh) return;
         if (enabled && currentOptions.fabricPreview) {
           node.userData.originalMaterial ??= node.material;
+          applyGeneratedFabricUv(node);
           node.material = fabricOverlayMaterial;
         } else if (node.userData.originalMaterial) {
           node.material = node.userData.originalMaterial;
+          restoreOriginalUv(node);
         }
       });
     }
@@ -711,8 +838,9 @@ function App() {
         source: layer.source,
         isPreview: layer.isPreview,
       });
-      setLayerFabric(object, layer.bakeFabric);
       frameScene();
+      setLayerFabric(object, layer.bakeFabric);
+      updateStats();
     }
 
     function loadLayer(layer) {
@@ -809,6 +937,7 @@ function App() {
         ambient.intensity = baseAmbientIntensity * options.lightIntensity;
         fabricOverlayMaterial.roughness = options.fabricRoughness;
         fabricOverlayMaterial.metalness = options.fabricMetalness;
+        fabricOverlayMaterial.sheen = options.fabricSheen;
         applyTileRepeat();
         fabricOverlayMaterial.needsUpdate = true;
         layerObjects.forEach((record) => {
@@ -816,12 +945,21 @@ function App() {
           if (layer) setLayerFabric(record.object, layer.bakeFabric);
         });
       },
-      loadFabricTexture(file) {
+      loadFabricTexture(file, shouldGenerateNormalMap = true, shouldGenerateRoughnessMap = true) {
         const url = URL.createObjectURL(file);
         new THREE.TextureLoader().load(
           url,
           (texture) => {
-            applyFabricTexture(createAdjustedFabricTexture(texture));
+            const fabricTexture = texture;
+            const automaticNormalMap = shouldGenerateNormalMap
+              ? createAutomaticNormalMap(fabricTexture)
+              : null;
+            const automaticRoughnessMap = shouldGenerateRoughnessMap
+              ? createAutomaticRoughnessMap(fabricTexture)
+              : null;
+            applyFabricTexture(fabricTexture);
+            if (automaticNormalMap) applyFabricMap("normalMap", automaticNormalMap);
+            if (automaticRoughnessMap) applyFabricMap("roughnessMap", automaticRoughnessMap);
             layerObjects.forEach((record) => {
               const layer = currentLayers.find((item) => item.id === record.object.userData.layerId);
               if (layer) setLayerFabric(record.object, layer.bakeFabric);
@@ -864,6 +1002,22 @@ function App() {
           () => URL.revokeObjectURL(url),
         );
       },
+      loadFabricMetalnessMap(file) {
+        const url = URL.createObjectURL(file);
+        new THREE.TextureLoader().load(
+          url,
+          (texture) => {
+            applyFabricMap("metalnessMap", texture);
+            layerObjects.forEach((record) => {
+              const layer = currentLayers.find((item) => item.id === record.object.userData.layerId);
+              if (layer) setLayerFabric(record.object, layer.bakeFabric);
+            });
+            URL.revokeObjectURL(url);
+          },
+          undefined,
+          () => URL.revokeObjectURL(url),
+        );
+      },
     };
 
     resize();
@@ -880,6 +1034,7 @@ function App() {
       fabricOverlayMaterial.map?.dispose();
       fabricOverlayMaterial.normalMap?.dispose();
       fabricOverlayMaterial.roughnessMap?.dispose();
+      fabricOverlayMaterial.metalnessMap?.dispose();
       fabricOverlayMaterial.dispose();
       studioEnvironment.dispose();
       pmremGenerator.dispose();
@@ -895,10 +1050,11 @@ function App() {
 
     async function restoreUploads() {
       try {
-        const [storedFabric, storedNormalMap, storedRoughnessMap, storedLayers] = await Promise.all([
+        const [storedFabric, storedNormalMap, storedRoughnessMap, storedMetalnessMap, storedLayers] = await Promise.all([
           readStoredAsset(FABRIC_ASSET_KEY),
           readStoredAsset(NORMAL_MAP_ASSET_KEY),
           readStoredAsset(ROUGHNESS_MAP_ASSET_KEY),
+          readStoredAsset(METALNESS_MAP_ASSET_KEY),
           Promise.all(
             getStoredLayerMetadata().map(async (layer) => {
               if (!layer.assetKey) return layer;
@@ -954,6 +1110,14 @@ function App() {
             name: storedRoughnessMap.name || "Stored roughness map",
           });
         }
+
+        if (storedMetalnessMap?.blob) {
+          setMetalnessMapName(storedMetalnessMap.name || "Stored metalness map");
+          setMetalnessMapTexture({
+            blob: storedMetalnessMap.blob,
+            name: storedMetalnessMap.name || "Stored metalness map",
+          });
+        }
       } catch (error) {
         console.error("Could not restore uploaded files.", error);
       }
@@ -979,8 +1143,12 @@ function App() {
 
   useEffect(() => {
     if (!sceneReady || !fabricTexture?.blob) return;
-    sceneApiRef.current?.loadFabricTexture(fabricTexture.blob);
-  }, [fabricTexture, sceneReady]);
+    sceneApiRef.current?.loadFabricTexture(
+      fabricTexture.blob,
+      !normalMapTexture?.blob,
+      !roughnessMapTexture?.blob,
+    );
+  }, [fabricTexture, normalMapTexture, roughnessMapTexture, sceneReady]);
 
   useEffect(() => {
     if (!sceneReady || !normalMapTexture?.blob) return;
@@ -991,6 +1159,11 @@ function App() {
     if (!sceneReady || !roughnessMapTexture?.blob) return;
     sceneApiRef.current?.loadFabricRoughnessMap(roughnessMapTexture.blob);
   }, [roughnessMapTexture, sceneReady]);
+
+  useEffect(() => {
+    if (!sceneReady || !metalnessMapTexture?.blob) return;
+    sceneApiRef.current?.loadFabricMetalnessMap(metalnessMapTexture.blob);
+  }, [metalnessMapTexture, sceneReady]);
 
   useEffect(() => {
     return () => {
@@ -1059,6 +1232,15 @@ function App() {
     setRoughnessMapTexture({ name: file.name, blob: file });
     saveStoredAsset(ROUGHNESS_MAP_ASSET_KEY, file).catch((error) => {
       console.error("Could not save roughness map upload.", error);
+    });
+  }
+
+  function handleMetalnessMapFile(file) {
+    if (!file) return;
+    setMetalnessMapName(file.name);
+    setMetalnessMapTexture({ name: file.name, blob: file });
+    saveStoredAsset(METALNESS_MAP_ASSET_KEY, file).catch((error) => {
+      console.error("Could not save metalness map upload.", error);
     });
   }
 
@@ -1257,6 +1439,16 @@ function App() {
           accept="image/*"
           onChange={(event) => {
             handleRoughnessMapFile(event.target.files?.[0]);
+            event.target.value = "";
+          }}
+        />
+        <input
+          ref={metalnessMapInputRef}
+          className="hidden-input"
+          type="file"
+          accept="image/*"
+          onChange={(event) => {
+            handleMetalnessMapFile(event.target.files?.[0]);
             event.target.value = "";
           }}
         />
@@ -1507,6 +1699,14 @@ function App() {
                 <ImagePlus size={17} />
                 <span>{roughnessMapName || "Load Roughness Map"}</span>
               </button>
+              <button
+                className="command-button full"
+                type="button"
+                onClick={() => metalnessMapInputRef.current?.click()}
+              >
+                <ImagePlus size={17} />
+                <span>{metalnessMapName || "Load Metalness Map"}</span>
+              </button>
               <label className="toggle-row">
                 <Check size={18} />
                 <span>Preview</span>
@@ -1526,7 +1726,7 @@ function App() {
                 />
               </label>
               <label className="slider-row with-value">
-                <span>Matte</span>
+                <span>Rough</span>
                 <input
                   type="range"
                   min={MATERIAL_MIN}
@@ -1538,7 +1738,7 @@ function App() {
                   }
                 />
                 <input
-                  aria-label="Matte value"
+                  aria-label="Roughness value"
                   className="numeric-input"
                   type="number"
                   min={MATERIAL_MIN}
@@ -1582,7 +1782,35 @@ function App() {
                 />
               </label>
               <label className="slider-row with-value">
-                <span>Tile W</span>
+                <span>Sheen</span>
+                <input
+                  type="range"
+                  min={MATERIAL_MIN}
+                  max={MATERIAL_MAX}
+                  step={MATERIAL_STEP}
+                  value={viewOptions.fabricSheen}
+                  onChange={(event) =>
+                    updateOption("fabricSheen", clampMaterialValue(Number(event.target.value)))
+                  }
+                />
+                <input
+                  aria-label="Sheen value"
+                  className="numeric-input"
+                  type="number"
+                  min={MATERIAL_MIN}
+                  max={MATERIAL_MAX}
+                  step={MATERIAL_STEP}
+                  value={formatMaterialValue(viewOptions.fabricSheen)}
+                  onChange={(event) => {
+                    const nextValue = Number(event.target.value);
+                    if (Number.isFinite(nextValue)) {
+                      updateOption("fabricSheen", clampMaterialValue(nextValue));
+                    }
+                  }}
+                />
+              </label>
+              <label className="slider-row with-value">
+                <span>Tile</span>
                 <input
                   type="range"
                   min={TILE_SIZE_MIN}
@@ -1592,7 +1820,7 @@ function App() {
                   onChange={(event) => updateTileSize("fabricTileWidth", Number(event.target.value))}
                 />
                 <input
-                  aria-label="Tile width"
+                  aria-label="Tile size"
                   className="numeric-input"
                   type="number"
                   min={TILE_SIZE_MIN}
@@ -1601,28 +1829,6 @@ function App() {
                   value={tileInputs.fabricTileWidth}
                   onBlur={() => handleTileInputBlur("fabricTileWidth")}
                   onChange={(event) => handleTileInputChange("fabricTileWidth", event.target.value)}
-                />
-              </label>
-              <label className="slider-row with-value">
-                <span>Tile H</span>
-                <input
-                  type="range"
-                  min={TILE_SIZE_MIN}
-                  max={TILE_SIZE_MAX}
-                  step={TILE_SIZE_STEP}
-                  value={viewOptions.fabricTileHeight}
-                  onChange={(event) => updateTileSize("fabricTileHeight", Number(event.target.value))}
-                />
-                <input
-                  aria-label="Tile height"
-                  className="numeric-input"
-                  type="number"
-                  min={TILE_SIZE_MIN}
-                  max={TILE_SIZE_MAX}
-                  step={TILE_SIZE_STEP}
-                  value={tileInputs.fabricTileHeight}
-                  onBlur={() => handleTileInputBlur("fabricTileHeight")}
-                  onChange={(event) => handleTileInputChange("fabricTileHeight", event.target.value)}
                 />
               </label>
               <div className="tile-readout">
