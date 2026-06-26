@@ -63,16 +63,6 @@ const DEFAULT_VIEW_OPTIONS = {
   fabricNormalStrength: 0.24,
 };
 
-const STUDIO_VIEW_OVERRIDES = {
-  viewPresetVersion: VIEW_OPTIONS_VERSION,
-  darkMode: false,
-  grid: false,
-  exposure: DEFAULT_VIEW_OPTIONS.exposure,
-  lightIntensity: DEFAULT_VIEW_OPTIONS.lightIntensity,
-  fabricTileWidth: DEFAULT_VIEW_OPTIONS.fabricTileWidth,
-  fabricTileHeight: DEFAULT_VIEW_OPTIONS.fabricTileHeight,
-};
-
 const DEFAULT_LAYER = {
   id: DEFAULT_LAYER_ID,
   name: "Base Layer",
@@ -178,9 +168,10 @@ function makeDownloadName(activeLayerName) {
 }
 
 function normalizeViewOptions(options = {}) {
-  const normalizedOptions = {
+  return {
     ...DEFAULT_VIEW_OPTIONS,
     ...options,
+    viewPresetVersion: VIEW_OPTIONS_VERSION,
     exposure: Number.isFinite(Number(options.exposure))
       ? clampExposure(Number(options.exposure))
       : DEFAULT_VIEW_OPTIONS.exposure,
@@ -204,15 +195,6 @@ function normalizeViewOptions(options = {}) {
       ? clampNormalStrength(Number(options.fabricNormalStrength))
       : DEFAULT_VIEW_OPTIONS.fabricNormalStrength,
   };
-
-  if (Number(options.viewPresetVersion) !== VIEW_OPTIONS_VERSION) {
-    return {
-      ...normalizedOptions,
-      ...STUDIO_VIEW_OVERRIDES,
-    };
-  }
-
-  return normalizedOptions;
 }
 
 function normalizeLayer(layer, fallbackIndex = 0) {
