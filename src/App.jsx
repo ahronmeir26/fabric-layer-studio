@@ -1,20 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
-  Check,
-  Cpu,
   Download,
   Eye,
   EyeOff,
-  Grid3X3,
-  ImagePlus,
-  Layers,
   Maximize2,
   Moon,
   Plus,
   RotateCcw,
-  Ruler,
-  Square,
+  Shirt,
   Sun,
   Trash2,
   Upload,
@@ -36,6 +30,9 @@ const LIGHT_STEP = 0.05;
 const MATERIAL_MIN = 0;
 const MATERIAL_MAX = 1;
 const MATERIAL_STEP = 0.01;
+const NORMAL_STRENGTH_MIN = 0;
+const NORMAL_STRENGTH_MAX = 2;
+const NORMAL_STRENGTH_STEP = 0.02;
 const AUTO_NORMAL_STRENGTH = 0.65;
 const ASSET_DB_NAME = "fabric-bake-assets";
 const ASSET_DB_VERSION = 1;
@@ -47,9 +44,6 @@ const DEFAULT_LAYER_ID = "preview-layer";
 const DEFAULT_FABRIC_NAME = "Default Herringbone";
 const DEFAULT_FABRIC_URL = "/local-assets/fabrics/default-herringbone-fabric.png";
 const FABRIC_ASSET_KEY = "fabric";
-const NORMAL_MAP_ASSET_KEY = "fabric-normal-map";
-const ROUGHNESS_MAP_ASSET_KEY = "fabric-roughness-map";
-const METALNESS_MAP_ASSET_KEY = "fabric-metalness-map";
 
 const DEFAULT_VIEW_OPTIONS = {
   viewPresetVersion: VIEW_OPTIONS_VERSION,
@@ -66,6 +60,7 @@ const DEFAULT_VIEW_OPTIONS = {
   fabricRoughness: 0.9,
   fabricMetalness: 0,
   fabricSheen: 0.16,
+  fabricNormalStrength: 0.24,
 };
 
 const STUDIO_VIEW_OVERRIDES = {
@@ -153,6 +148,10 @@ function clampMaterialValue(value) {
   return Math.min(MATERIAL_MAX, Math.max(MATERIAL_MIN, value));
 }
 
+function clampNormalStrength(value) {
+  return Math.min(NORMAL_STRENGTH_MAX, Math.max(NORMAL_STRENGTH_MIN, value));
+}
+
 function formatTileSize(value) {
   return value.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
 }
@@ -201,6 +200,9 @@ function normalizeViewOptions(options = {}) {
     fabricSheen: Number.isFinite(Number(options.fabricSheen))
       ? clampMaterialValue(Number(options.fabricSheen))
       : DEFAULT_VIEW_OPTIONS.fabricSheen,
+    fabricNormalStrength: Number.isFinite(Number(options.fabricNormalStrength))
+      ? clampNormalStrength(Number(options.fabricNormalStrength))
+      : DEFAULT_VIEW_OPTIONS.fabricNormalStrength,
   };
 
   if (Number(options.viewPresetVersion) !== VIEW_OPTIONS_VERSION) {
@@ -378,14 +380,10 @@ function App() {
   const viewportRef = useRef(null);
   const layerFileInputRef = useRef(null);
   const textureInputRef = useRef(null);
-  const normalMapInputRef = useRef(null);
-  const roughnessMapInputRef = useRef(null);
-  const metalnessMapInputRef = useRef(null);
   const sceneApiRef = useRef(null);
   const pendingLayerUploadRef = useRef(DEFAULT_LAYER_ID);
   const layersRef = useRef([]);
   const [sceneReady, setSceneReady] = useState(false);
-  const [activeTab, setActiveTab] = useState("layers");
   const [layers, setLayers] = useState(() => getStoredLayerMetadata());
   const [selectedLayerId, setSelectedLayerId] = useState(() => getStoredLayerMetadata()[0]?.id ?? DEFAULT_LAYER_ID);
   const [modelStats, setModelStats] = useState(null);
@@ -401,12 +399,6 @@ function App() {
   });
   const [fabricTextureName, setFabricTextureName] = useState(DEFAULT_FABRIC_NAME);
   const [fabricTexture, setFabricTexture] = useState(null);
-  const [normalMapName, setNormalMapName] = useState("");
-  const [normalMapTexture, setNormalMapTexture] = useState(null);
-  const [roughnessMapName, setRoughnessMapName] = useState("");
-  const [roughnessMapTexture, setRoughnessMapTexture] = useState(null);
-  const [metalnessMapName, setMetalnessMapName] = useState("");
-  const [metalnessMapTexture, setMetalnessMapTexture] = useState(null);
 
   const selectedLayer = useMemo(
     () => layers.find((layer) => layer.id === selectedLayerId) ?? layers[0] ?? DEFAULT_LAYER,
@@ -938,6 +930,7 @@ function App() {
         fabricOverlayMaterial.roughness = options.fabricRoughness;
         fabricOverlayMaterial.metalness = options.fabricMetalness;
         fabricOverlayMaterial.sheen = options.fabricSheen;
+        fabricOverlayMaterial.normalScale.set(options.fabricNormalStrength, options.fabricNormalStrength);
         applyTileRepeat();
         fabricOverlayMaterial.needsUpdate = true;
         layerObjects.forEach((record) => {
@@ -1050,11 +1043,8 @@ function App() {
 
     async function restoreUploads() {
       try {
-        const [storedFabric, storedNormalMap, storedRoughnessMap, storedMetalnessMap, storedLayers] = await Promise.all([
+        const [storedFabric, storedLayers] = await Promise.all([
           readStoredAsset(FABRIC_ASSET_KEY),
-          readStoredAsset(NORMAL_MAP_ASSET_KEY),
-          readStoredAsset(ROUGHNESS_MAP_ASSET_KEY),
-          readStoredAsset(METALNESS_MAP_ASSET_KEY),
           Promise.all(
             getStoredLayerMetadata().map(async (layer) => {
               if (!layer.assetKey) return layer;
@@ -1094,30 +1084,6 @@ function App() {
             name: DEFAULT_FABRIC_NAME,
           });
         }
-
-        if (storedNormalMap?.blob) {
-          setNormalMapName(storedNormalMap.name || "Stored normal map");
-          setNormalMapTexture({
-            blob: storedNormalMap.blob,
-            name: storedNormalMap.name || "Stored normal map",
-          });
-        }
-
-        if (storedRoughnessMap?.blob) {
-          setRoughnessMapName(storedRoughnessMap.name || "Stored roughness map");
-          setRoughnessMapTexture({
-            blob: storedRoughnessMap.blob,
-            name: storedRoughnessMap.name || "Stored roughness map",
-          });
-        }
-
-        if (storedMetalnessMap?.blob) {
-          setMetalnessMapName(storedMetalnessMap.name || "Stored metalness map");
-          setMetalnessMapTexture({
-            blob: storedMetalnessMap.blob,
-            name: storedMetalnessMap.name || "Stored metalness map",
-          });
-        }
       } catch (error) {
         console.error("Could not restore uploaded files.", error);
       }
@@ -1143,27 +1109,8 @@ function App() {
 
   useEffect(() => {
     if (!sceneReady || !fabricTexture?.blob) return;
-    sceneApiRef.current?.loadFabricTexture(
-      fabricTexture.blob,
-      !normalMapTexture?.blob,
-      !roughnessMapTexture?.blob,
-    );
-  }, [fabricTexture, normalMapTexture, roughnessMapTexture, sceneReady]);
-
-  useEffect(() => {
-    if (!sceneReady || !normalMapTexture?.blob) return;
-    sceneApiRef.current?.loadFabricNormalMap(normalMapTexture.blob);
-  }, [normalMapTexture, sceneReady]);
-
-  useEffect(() => {
-    if (!sceneReady || !roughnessMapTexture?.blob) return;
-    sceneApiRef.current?.loadFabricRoughnessMap(roughnessMapTexture.blob);
-  }, [roughnessMapTexture, sceneReady]);
-
-  useEffect(() => {
-    if (!sceneReady || !metalnessMapTexture?.blob) return;
-    sceneApiRef.current?.loadFabricMetalnessMap(metalnessMapTexture.blob);
-  }, [metalnessMapTexture, sceneReady]);
+    sceneApiRef.current?.loadFabricTexture(fabricTexture.blob, true, true);
+  }, [fabricTexture, sceneReady]);
 
   useEffect(() => {
     return () => {
@@ -1214,33 +1161,6 @@ function App() {
     setFabricTexture({ name: file.name, blob: file });
     saveStoredAsset(FABRIC_ASSET_KEY, file).catch((error) => {
       console.error("Could not save fabric upload.", error);
-    });
-  }
-
-  function handleNormalMapFile(file) {
-    if (!file) return;
-    setNormalMapName(file.name);
-    setNormalMapTexture({ name: file.name, blob: file });
-    saveStoredAsset(NORMAL_MAP_ASSET_KEY, file).catch((error) => {
-      console.error("Could not save normal map upload.", error);
-    });
-  }
-
-  function handleRoughnessMapFile(file) {
-    if (!file) return;
-    setRoughnessMapName(file.name);
-    setRoughnessMapTexture({ name: file.name, blob: file });
-    saveStoredAsset(ROUGHNESS_MAP_ASSET_KEY, file).catch((error) => {
-      console.error("Could not save roughness map upload.", error);
-    });
-  }
-
-  function handleMetalnessMapFile(file) {
-    if (!file) return;
-    setMetalnessMapName(file.name);
-    setMetalnessMapTexture({ name: file.name, blob: file });
-    saveStoredAsset(METALNESS_MAP_ASSET_KEY, file).catch((error) => {
-      console.error("Could not save metalness map upload.", error);
     });
   }
 
@@ -1333,6 +1253,7 @@ function App() {
     const nextValue = Number(tileInputs[key]);
     updateTileSize(key, Number.isFinite(nextValue) ? nextValue : viewOptions[key]);
   }
+  const selectedHasModel = Boolean(selectedLayer.source || selectedLayer.isPreview);
 
   return (
     <main
@@ -1349,7 +1270,7 @@ function App() {
         {loadState.status !== "ready" && (
           <div className="status-layer" role="status">
             <div className="status-mark">
-              {loadState.status === "error" ? <RotateCcw size={28} /> : <Box size={28} />}
+              {loadState.status === "error" ? <RotateCcw size={26} /> : <Box size={26} />}
             </div>
             <p>{loadState.status === "error" ? loadState.message : "Loading"}</p>
           </div>
@@ -1357,51 +1278,12 @@ function App() {
         {isDragging && (
           <div className="drop-layer">
             <Upload size={34} />
-            <span>Release GLB</span>
+            <span>Release to add GLB</span>
           </div>
         )}
       </section>
 
       <aside className="side-panel" aria-label="Viewer controls">
-        <div className="brand-row">
-          <div>
-            <span className="eyebrow">Fabric Bake</span>
-            <h1>Layer Viewer</h1>
-          </div>
-          <button
-            className="icon-button"
-            type="button"
-            aria-label="Toggle color mode"
-            title="Toggle color mode"
-            onClick={() => updateOption("darkMode", !viewOptions.darkMode)}
-          >
-            {viewOptions.darkMode ? <Sun size={18} /> : <Moon size={18} />}
-          </button>
-        </div>
-
-        <div className="tab-list" role="tablist" aria-label="Sidebar tabs">
-          <button
-            className={`tab-button ${activeTab === "layers" ? "active" : ""}`}
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "layers"}
-            onClick={() => setActiveTab("layers")}
-          >
-            <Layers size={16} />
-            <span>Layers</span>
-          </button>
-          <button
-            className={`tab-button ${activeTab === "viewer" ? "active" : ""}`}
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "viewer"}
-            onClick={() => setActiveTab("viewer")}
-          >
-            <Grid3X3 size={16} />
-            <span>Viewer</span>
-          </button>
-        </div>
-
         <input
           ref={layerFileInputRef}
           className="hidden-input"
@@ -1422,433 +1304,362 @@ function App() {
             event.target.value = "";
           }}
         />
-        <input
-          ref={normalMapInputRef}
-          className="hidden-input"
-          type="file"
-          accept="image/*"
-          onChange={(event) => {
-            handleNormalMapFile(event.target.files?.[0]);
-            event.target.value = "";
-          }}
-        />
-        <input
-          ref={roughnessMapInputRef}
-          className="hidden-input"
-          type="file"
-          accept="image/*"
-          onChange={(event) => {
-            handleRoughnessMapFile(event.target.files?.[0]);
-            event.target.value = "";
-          }}
-        />
-        <input
-          ref={metalnessMapInputRef}
-          className="hidden-input"
-          type="file"
-          accept="image/*"
-          onChange={(event) => {
-            handleMetalnessMapFile(event.target.files?.[0]);
-            event.target.value = "";
-          }}
-        />
 
-        {activeTab === "layers" && (
-          <>
-            <div className="model-strip">
-              <div className="model-icon">
-                <Layers size={22} />
-              </div>
-              <div className="model-name">
-                <span>{selectedLayer.name}</span>
-                <small>{selectedLayer.source || selectedLayer.isPreview ? "Selected layer" : "Empty layer"}</small>
-              </div>
-            </div>
+        <header className="panel-head">
+          <div className="brand">
+            <span className="eyebrow">Fabric Bake</span>
+            <h1>Studio</h1>
+          </div>
+          <button
+            className="ghost-button"
+            type="button"
+            aria-label="Toggle color mode"
+            title="Toggle color mode"
+            onClick={() => updateOption("darkMode", !viewOptions.darkMode)}
+          >
+            {viewOptions.darkMode ? <Sun size={18} /> : <Moon size={18} />}
+          </button>
+        </header>
 
-            <div className="button-row">
-              <button className="command-button" type="button" onClick={() => openLayerUpload()}>
-                <Upload size={17} />
-                <span>Open GLB</span>
-              </button>
-              <button
-                className="command-button"
-                type="button"
-                onClick={() => textureInputRef.current?.click()}
-              >
-                <ImagePlus size={17} />
-                <span>{fabricTextureName || "Fabric"}</span>
-              </button>
-              <button
-                className="icon-button"
-                type="button"
-                title="Frame layers"
-                aria-label="Frame layers"
-                onClick={() => sceneApiRef.current?.resetView()}
-              >
-                <Maximize2 size={18} />
-              </button>
-            </div>
-
-            <div className="panel-section">
-              <div className="section-header">
-                <div className="section-title">Layer Stack</div>
-                <button className="icon-button compact" type="button" title="Add layer" aria-label="Add layer" onClick={addLayer}>
-                  <Plus size={17} />
-                </button>
-              </div>
-
-              <div className="layer-list">
-                {layers.map((layer) => (
-                  <div
-                    key={layer.id}
-                    className={`layer-card ${layer.id === selectedLayer.id ? "selected" : ""}`}
-                    onClick={() => setSelectedLayerId(layer.id)}
-                  >
-                    <div className="layer-card-top">
-                      <button
-                        className="icon-button compact"
-                        type="button"
-                        title={layer.visible ? "Hide layer" : "Show layer"}
-                        aria-label={layer.visible ? "Hide layer" : "Show layer"}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          updateLayer(layer.id, { visible: !layer.visible });
-                        }}
-                      >
-                        {layer.visible ? <Eye size={17} /> : <EyeOff size={17} />}
-                      </button>
-                      <input
-                        className="layer-name-input"
-                        aria-label="Layer name"
-                        value={layer.name}
-                        onClick={(event) => event.stopPropagation()}
-                        onChange={(event) => updateLayer(layer.id, { name: event.target.value })}
-                      />
-                      <button
-                        className="icon-button compact"
-                        type="button"
-                        title="Remove layer"
-                        aria-label="Remove layer"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          removeLayer(layer.id);
-                        }}
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-
-                    <div className="layer-controls">
-                      <button
-                        className="command-button slim"
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          openLayerUpload(layer.id);
-                        }}
-                      >
-                        <Upload size={15} />
-                        <span>{layer.source || layer.isPreview ? "Replace GLB" : "Add GLB"}</span>
-                      </button>
-                      <label className="toggle-chip" onClick={(event) => event.stopPropagation()}>
-                        <Check size={15} />
-                        <span>Bake fabric</span>
-                        <input
-                          type="checkbox"
-                          checked={layer.bakeFabric}
-                          onChange={(event) => updateLayer(layer.id, { bakeFabric: event.target.checked })}
-                        />
-                      </label>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </>
-        )}
-
-        {activeTab === "viewer" && (
-          <>
-            <div className="button-row">
-              <button
-                className="icon-button"
-                type="button"
-                title="Export viewport PNG"
-                aria-label="Export viewport PNG"
-                onClick={() => sceneApiRef.current?.exportViewport(makeDownloadName(selectedLayer.name))}
-              >
-                <Download size={18} />
-              </button>
-              <button
-                className="icon-button"
-                type="button"
-                title="Frame layers"
-                aria-label="Frame layers"
-                onClick={() => sceneApiRef.current?.resetView()}
-              >
-                <Maximize2 size={18} />
-              </button>
-            </div>
-
-            <div className="panel-section">
-              <div className="section-title">Display</div>
-              <label className="toggle-row">
-                <Grid3X3 size={18} />
-                <span>Grid</span>
-                <input
-                  type="checkbox"
-                  checked={viewOptions.grid}
-                  onChange={(event) => updateOption("grid", event.target.checked)}
-                />
-              </label>
-              <label className="toggle-row">
-                <RotateCcw size={18} />
-                <span>Rotate</span>
-                <input
-                  type="checkbox"
-                  checked={viewOptions.autoRotate}
-                  onChange={(event) => updateOption("autoRotate", event.target.checked)}
-                />
-              </label>
-              <label className="toggle-row">
-                <Square size={18} />
-                <span>Transparent</span>
-                <input
-                  type="checkbox"
-                  checked={viewOptions.transparentBackground}
-                  onChange={(event) => updateOption("transparentBackground", event.target.checked)}
-                />
-              </label>
-              <label className="slider-row with-value">
-                <span>Exposure</span>
-                <input
-                  type="range"
-                  min={EXPOSURE_MIN}
-                  max={EXPOSURE_MAX}
-                  step={EXPOSURE_STEP}
-                  value={viewOptions.exposure}
-                  onChange={(event) => updateOption("exposure", clampExposure(Number(event.target.value)))}
-                />
-                <input
-                  aria-label="Exposure value"
-                  className="numeric-input"
-                  type="number"
-                  min={EXPOSURE_MIN}
-                  max={EXPOSURE_MAX}
-                  step={EXPOSURE_STEP}
-                  value={formatExposure(viewOptions.exposure)}
-                  onChange={(event) => {
-                    const nextValue = Number(event.target.value);
-                    if (Number.isFinite(nextValue)) updateOption("exposure", clampExposure(nextValue));
-                  }}
-                />
-              </label>
-              <label className="slider-row with-value">
-                <span>Light</span>
-                <input
-                  type="range"
-                  min={LIGHT_MIN}
-                  max={LIGHT_MAX}
-                  step={LIGHT_STEP}
-                  value={viewOptions.lightIntensity}
-                  onChange={(event) =>
-                    updateOption("lightIntensity", clampLightIntensity(Number(event.target.value)))
-                  }
-                />
-                <input
-                  aria-label="Light value"
-                  className="numeric-input"
-                  type="number"
-                  min={LIGHT_MIN}
-                  max={LIGHT_MAX}
-                  step={LIGHT_STEP}
-                  value={formatLightIntensity(viewOptions.lightIntensity)}
-                  onChange={(event) => {
-                    const nextValue = Number(event.target.value);
-                    if (Number.isFinite(nextValue)) {
-                      updateOption("lightIntensity", clampLightIntensity(nextValue));
-                    }
-                  }}
-                />
-              </label>
-            </div>
-
-            <div className="panel-section">
-              <div className="section-title">Fabric</div>
-              <button
-                className="command-button full"
-                type="button"
-                onClick={() => textureInputRef.current?.click()}
-              >
-                <ImagePlus size={17} />
-                <span>{fabricTextureName || "Load Color"}</span>
-              </button>
-              <button
-                className="command-button full"
-                type="button"
-                onClick={() => normalMapInputRef.current?.click()}
-              >
-                <ImagePlus size={17} />
-                <span>{normalMapName || "Load Normal Map"}</span>
-              </button>
-              <button
-                className="command-button full"
-                type="button"
-                onClick={() => roughnessMapInputRef.current?.click()}
-              >
-                <ImagePlus size={17} />
-                <span>{roughnessMapName || "Load Roughness Map"}</span>
-              </button>
-              <button
-                className="command-button full"
-                type="button"
-                onClick={() => metalnessMapInputRef.current?.click()}
-              >
-                <ImagePlus size={17} />
-                <span>{metalnessMapName || "Load Metalness Map"}</span>
-              </button>
-              <label className="toggle-row">
-                <Check size={18} />
-                <span>Preview</span>
-                <input
-                  type="checkbox"
-                  checked={viewOptions.fabricPreview}
-                  onChange={(event) => updateOption("fabricPreview", event.target.checked)}
-                />
-              </label>
-              <label className="toggle-row">
-                <Cpu size={18} />
-                <span>Browser Bake</span>
-                <input
-                  type="checkbox"
-                  checked={viewOptions.bakeInBrowser}
-                  onChange={(event) => updateOption("bakeInBrowser", event.target.checked)}
-                />
-              </label>
-              <label className="slider-row with-value">
-                <span>Rough</span>
-                <input
-                  type="range"
-                  min={MATERIAL_MIN}
-                  max={MATERIAL_MAX}
-                  step={MATERIAL_STEP}
-                  value={viewOptions.fabricRoughness}
-                  onChange={(event) =>
-                    updateOption("fabricRoughness", clampMaterialValue(Number(event.target.value)))
-                  }
-                />
-                <input
-                  aria-label="Roughness value"
-                  className="numeric-input"
-                  type="number"
-                  min={MATERIAL_MIN}
-                  max={MATERIAL_MAX}
-                  step={MATERIAL_STEP}
-                  value={formatMaterialValue(viewOptions.fabricRoughness)}
-                  onChange={(event) => {
-                    const nextValue = Number(event.target.value);
-                    if (Number.isFinite(nextValue)) {
-                      updateOption("fabricRoughness", clampMaterialValue(nextValue));
-                    }
-                  }}
-                />
-              </label>
-              <label className="slider-row with-value">
-                <span>Metal</span>
-                <input
-                  type="range"
-                  min={MATERIAL_MIN}
-                  max={MATERIAL_MAX}
-                  step={MATERIAL_STEP}
-                  value={viewOptions.fabricMetalness}
-                  onChange={(event) =>
-                    updateOption("fabricMetalness", clampMaterialValue(Number(event.target.value)))
-                  }
-                />
-                <input
-                  aria-label="Metalness value"
-                  className="numeric-input"
-                  type="number"
-                  min={MATERIAL_MIN}
-                  max={MATERIAL_MAX}
-                  step={MATERIAL_STEP}
-                  value={formatMaterialValue(viewOptions.fabricMetalness)}
-                  onChange={(event) => {
-                    const nextValue = Number(event.target.value);
-                    if (Number.isFinite(nextValue)) {
-                      updateOption("fabricMetalness", clampMaterialValue(nextValue));
-                    }
-                  }}
-                />
-              </label>
-              <label className="slider-row with-value">
-                <span>Sheen</span>
-                <input
-                  type="range"
-                  min={MATERIAL_MIN}
-                  max={MATERIAL_MAX}
-                  step={MATERIAL_STEP}
-                  value={viewOptions.fabricSheen}
-                  onChange={(event) =>
-                    updateOption("fabricSheen", clampMaterialValue(Number(event.target.value)))
-                  }
-                />
-                <input
-                  aria-label="Sheen value"
-                  className="numeric-input"
-                  type="number"
-                  min={MATERIAL_MIN}
-                  max={MATERIAL_MAX}
-                  step={MATERIAL_STEP}
-                  value={formatMaterialValue(viewOptions.fabricSheen)}
-                  onChange={(event) => {
-                    const nextValue = Number(event.target.value);
-                    if (Number.isFinite(nextValue)) {
-                      updateOption("fabricSheen", clampMaterialValue(nextValue));
-                    }
-                  }}
-                />
-              </label>
-              <label className="slider-row with-value">
-                <span>Tile</span>
-                <input
-                  type="range"
-                  min={TILE_SIZE_MIN}
-                  max={TILE_SIZE_MAX}
-                  step={TILE_SIZE_STEP}
-                  value={viewOptions.fabricTileWidth}
-                  onChange={(event) => updateTileSize("fabricTileWidth", Number(event.target.value))}
-                />
-                <input
-                  aria-label="Tile size"
-                  className="numeric-input"
-                  type="number"
-                  min={TILE_SIZE_MIN}
-                  max={TILE_SIZE_MAX}
-                  step={TILE_SIZE_STEP}
-                  value={tileInputs.fabricTileWidth}
-                  onBlur={() => handleTileInputBlur("fabricTileWidth")}
-                  onChange={(event) => handleTileInputChange("fabricTileWidth", event.target.value)}
-                />
-              </label>
-              <div className="tile-readout">
-                <Ruler size={18} />
-                <span>
-                  {fabricRepeat.x.toFixed(1)} x {fabricRepeat.y.toFixed(1)} repeats
-                </span>
-              </div>
-            </div>
-          </>
-        )}
-
-        <div className="stats-grid" aria-label="Model stats">
-          {summaryItems.map(([label, value]) => (
-            <div key={label} className="stat-cell">
-              <span>{label}</span>
-              <strong>{value}</strong>
-            </div>
-          ))}
+        <div className="upload-grid">
+          <button
+            className={`upload-card ${selectedHasModel ? "filled" : ""}`}
+            type="button"
+            onClick={() => openLayerUpload()}
+          >
+            <span className="upload-icon">
+              <Box size={20} />
+            </span>
+            <span className="upload-text">
+              <strong>Model</strong>
+              <small>{selectedHasModel ? selectedLayer.name : "Upload a .glb"}</small>
+            </span>
+            <Upload className="upload-action" size={16} />
+          </button>
+          <button
+            className={`upload-card ${fabricTextureName ? "filled" : ""}`}
+            type="button"
+            onClick={() => textureInputRef.current?.click()}
+          >
+            <span className="upload-icon">
+              <Shirt size={20} />
+            </span>
+            <span className="upload-text">
+              <strong>Fabric</strong>
+              <small>{fabricTextureName || "Upload an image"}</small>
+            </span>
+            <Upload className="upload-action" size={16} />
+          </button>
         </div>
+
+        <section className="panel-block">
+          <div className="block-head">
+            <span className="block-title">Layers</span>
+            <button
+              className="ghost-button small"
+              type="button"
+              title="Add layer"
+              aria-label="Add layer"
+              onClick={addLayer}
+            >
+              <Plus size={16} />
+            </button>
+          </div>
+
+          <div className="layer-list">
+            {layers.map((layer) => {
+              const hasModel = Boolean(layer.source || layer.isPreview);
+              const isSelected = layer.id === selectedLayer.id;
+              return (
+                <div
+                  key={layer.id}
+                  className={`layer-row ${isSelected ? "selected" : ""}`}
+                  onClick={() => setSelectedLayerId(layer.id)}
+                >
+                  <button
+                    className="row-icon"
+                    type="button"
+                    title={layer.visible ? "Hide layer" : "Show layer"}
+                    aria-label={layer.visible ? "Hide layer" : "Show layer"}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      updateLayer(layer.id, { visible: !layer.visible });
+                    }}
+                  >
+                    {layer.visible ? <Eye size={16} /> : <EyeOff size={16} />}
+                  </button>
+
+                  <input
+                    className="layer-name"
+                    aria-label="Layer name"
+                    value={layer.name}
+                    onClick={(event) => event.stopPropagation()}
+                    onChange={(event) => updateLayer(layer.id, { name: event.target.value })}
+                  />
+
+                  <button
+                    className={`pill-toggle ${layer.bakeFabric ? "on" : ""}`}
+                    type="button"
+                    title={hasModel ? "Apply fabric to this layer" : "Add a model first"}
+                    disabled={!hasModel}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      updateLayer(layer.id, { bakeFabric: !layer.bakeFabric });
+                    }}
+                  >
+                    <Shirt size={14} />
+                  </button>
+
+                  <button
+                    className="row-icon danger"
+                    type="button"
+                    title="Remove layer"
+                    aria-label="Remove layer"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      removeLayer(layer.id);
+                    }}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="panel-block">
+          <div className="block-head">
+            <span className="block-title">Fabric scale</span>
+            <span className="block-meta">
+              {fabricRepeat.x.toFixed(1)} × {fabricRepeat.y.toFixed(1)} repeats
+            </span>
+          </div>
+          <label className="slider-row with-value">
+            <span>Tile</span>
+            <input
+              type="range"
+              min={TILE_SIZE_MIN}
+              max={TILE_SIZE_MAX}
+              step={TILE_SIZE_STEP}
+              value={viewOptions.fabricTileWidth}
+              onChange={(event) => updateTileSize("fabricTileWidth", Number(event.target.value))}
+            />
+            <input
+              aria-label="Tile size"
+              className="numeric-input"
+              type="number"
+              min={TILE_SIZE_MIN}
+              max={TILE_SIZE_MAX}
+              step={TILE_SIZE_STEP}
+              value={tileInputs.fabricTileWidth}
+              onBlur={() => handleTileInputBlur("fabricTileWidth")}
+              onChange={(event) => handleTileInputChange("fabricTileWidth", event.target.value)}
+            />
+          </label>
+        </section>
+
+        <section className="panel-block">
+          <span className="block-title">Fabric material</span>
+          <label className="slider-row with-value">
+            <span>Roughness</span>
+            <input
+              type="range"
+              min={MATERIAL_MIN}
+              max={MATERIAL_MAX}
+              step={MATERIAL_STEP}
+              value={viewOptions.fabricRoughness}
+              onChange={(event) =>
+                updateOption("fabricRoughness", clampMaterialValue(Number(event.target.value)))
+              }
+            />
+            <input
+              aria-label="Roughness value"
+              className="numeric-input"
+              type="number"
+              min={MATERIAL_MIN}
+              max={MATERIAL_MAX}
+              step={MATERIAL_STEP}
+              value={formatMaterialValue(viewOptions.fabricRoughness)}
+              onChange={(event) => {
+                const nextValue = Number(event.target.value);
+                if (Number.isFinite(nextValue)) {
+                  updateOption("fabricRoughness", clampMaterialValue(nextValue));
+                }
+              }}
+            />
+          </label>
+          <label className="slider-row with-value">
+            <span>Sheen</span>
+            <input
+              type="range"
+              min={MATERIAL_MIN}
+              max={MATERIAL_MAX}
+              step={MATERIAL_STEP}
+              value={viewOptions.fabricSheen}
+              onChange={(event) =>
+                updateOption("fabricSheen", clampMaterialValue(Number(event.target.value)))
+              }
+            />
+            <input
+              aria-label="Sheen value"
+              className="numeric-input"
+              type="number"
+              min={MATERIAL_MIN}
+              max={MATERIAL_MAX}
+              step={MATERIAL_STEP}
+              value={formatMaterialValue(viewOptions.fabricSheen)}
+              onChange={(event) => {
+                const nextValue = Number(event.target.value);
+                if (Number.isFinite(nextValue)) {
+                  updateOption("fabricSheen", clampMaterialValue(nextValue));
+                }
+              }}
+            />
+          </label>
+          <label className="slider-row with-value">
+            <span>Weave</span>
+            <input
+              type="range"
+              min={NORMAL_STRENGTH_MIN}
+              max={NORMAL_STRENGTH_MAX}
+              step={NORMAL_STRENGTH_STEP}
+              value={viewOptions.fabricNormalStrength}
+              onChange={(event) =>
+                updateOption("fabricNormalStrength", clampNormalStrength(Number(event.target.value)))
+              }
+            />
+            <input
+              aria-label="Weave depth value"
+              className="numeric-input"
+              type="number"
+              min={NORMAL_STRENGTH_MIN}
+              max={NORMAL_STRENGTH_MAX}
+              step={NORMAL_STRENGTH_STEP}
+              value={formatMaterialValue(viewOptions.fabricNormalStrength)}
+              onChange={(event) => {
+                const nextValue = Number(event.target.value);
+                if (Number.isFinite(nextValue)) {
+                  updateOption("fabricNormalStrength", clampNormalStrength(nextValue));
+                }
+              }}
+            />
+          </label>
+          <label className="slider-row with-value">
+            <span>Metallic</span>
+            <input
+              type="range"
+              min={MATERIAL_MIN}
+              max={MATERIAL_MAX}
+              step={MATERIAL_STEP}
+              value={viewOptions.fabricMetalness}
+              onChange={(event) =>
+                updateOption("fabricMetalness", clampMaterialValue(Number(event.target.value)))
+              }
+            />
+            <input
+              aria-label="Metallic value"
+              className="numeric-input"
+              type="number"
+              min={MATERIAL_MIN}
+              max={MATERIAL_MAX}
+              step={MATERIAL_STEP}
+              value={formatMaterialValue(viewOptions.fabricMetalness)}
+              onChange={(event) => {
+                const nextValue = Number(event.target.value);
+                if (Number.isFinite(nextValue)) {
+                  updateOption("fabricMetalness", clampMaterialValue(nextValue));
+                }
+              }}
+            />
+          </label>
+        </section>
+
+        <section className="panel-block">
+          <span className="block-title">Lighting</span>
+          <label className="slider-row with-value">
+            <span>Exposure</span>
+            <input
+              type="range"
+              min={EXPOSURE_MIN}
+              max={EXPOSURE_MAX}
+              step={EXPOSURE_STEP}
+              value={viewOptions.exposure}
+              onChange={(event) => updateOption("exposure", clampExposure(Number(event.target.value)))}
+            />
+            <input
+              aria-label="Exposure value"
+              className="numeric-input"
+              type="number"
+              min={EXPOSURE_MIN}
+              max={EXPOSURE_MAX}
+              step={EXPOSURE_STEP}
+              value={formatExposure(viewOptions.exposure)}
+              onChange={(event) => {
+                const nextValue = Number(event.target.value);
+                if (Number.isFinite(nextValue)) updateOption("exposure", clampExposure(nextValue));
+              }}
+            />
+          </label>
+          <label className="slider-row with-value">
+            <span>Light</span>
+            <input
+              type="range"
+              min={LIGHT_MIN}
+              max={LIGHT_MAX}
+              step={LIGHT_STEP}
+              value={viewOptions.lightIntensity}
+              onChange={(event) =>
+                updateOption("lightIntensity", clampLightIntensity(Number(event.target.value)))
+              }
+            />
+            <input
+              aria-label="Light value"
+              className="numeric-input"
+              type="number"
+              min={LIGHT_MIN}
+              max={LIGHT_MAX}
+              step={LIGHT_STEP}
+              value={formatLightIntensity(viewOptions.lightIntensity)}
+              onChange={(event) => {
+                const nextValue = Number(event.target.value);
+                if (Number.isFinite(nextValue)) {
+                  updateOption("lightIntensity", clampLightIntensity(nextValue));
+                }
+              }}
+            />
+          </label>
+        </section>
+
+        <div className="action-row">
+          <button
+            className="action-button"
+            type="button"
+            onClick={() => sceneApiRef.current?.resetView()}
+          >
+            <Maximize2 size={16} />
+            <span>Frame</span>
+          </button>
+          <button
+            className="action-button primary"
+            type="button"
+            onClick={() => sceneApiRef.current?.exportViewport(makeDownloadName(selectedLayer.name))}
+          >
+            <Download size={16} />
+            <span>Export PNG</span>
+          </button>
+        </div>
+
+        {summaryItems.length > 0 && (
+          <div className="stats-grid" aria-label="Model stats">
+            {summaryItems.map(([label, value]) => (
+              <div key={label} className="stat-cell">
+                <span>{label}</span>
+                <strong>{value}</strong>
+              </div>
+            ))}
+          </div>
+        )}
       </aside>
     </main>
   );
