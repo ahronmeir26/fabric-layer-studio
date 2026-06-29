@@ -227,6 +227,53 @@ h1 {
   color: var(--text-muted);
 }
 
+.map-slot-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 7px;
+}
+
+.map-slot {
+  display: grid;
+  grid-template-columns: 18px 88px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px dashed var(--panel-border);
+  border-radius: 10px;
+  color: var(--text-main);
+  background: var(--surface);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+
+.map-slot:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--panel-border));
+  background: var(--surface-hover);
+}
+
+.map-slot.filled {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--panel-border));
+}
+
+.map-slot span {
+  font-size: 0.82rem;
+  font-weight: 760;
+}
+
+.map-slot small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Blocks ----------------------------------------------------------------- */
 
 .panel-block {
@@ -389,6 +436,11 @@ h1 {
 .numeric-input:focus {
   outline: none;
   border-color: color-mix(in srgb, var(--accent) 50%, var(--panel-border));
+}
+
+.slider-row input:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
 }
 
 /* Chips ------------------------------------------------------------------ */

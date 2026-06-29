@@ -4,6 +4,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  FileImage,
   Maximize2,
   Moon,
   Plus,
@@ -34,6 +35,7 @@ const NORMAL_STRENGTH_MIN = 0;
 const NORMAL_STRENGTH_MAX = 2;
 const NORMAL_STRENGTH_STEP = 0.02;
 const AUTO_NORMAL_STRENGTH = 0.65;
+const MAX_PREVIEW_TEXTURE_SIZE = 2048;
 const ASSET_DB_NAME = "fabric-bake-assets";
 const ASSET_DB_VERSION = 1;
 const ASSET_STORE_NAME = "uploads";
@@ -44,6 +46,19 @@ const DEFAULT_LAYER_ID = "preview-layer";
 const DEFAULT_FABRIC_NAME = "Default Herringbone";
 const DEFAULT_FABRIC_URL = "/local-assets/fabrics/default-herringbone-fabric.png";
 const FABRIC_ASSET_KEY = "fabric";
+const FABRIC_TEXTURE_SLOTS = ["fabricMap", "map", "normalMap", "roughnessMap", "metalnessMap", "displacementMap"];
+const FABRIC_DISPLACEMENT_SCALE = 0.012;
+const FABRIC_MAPPING_TILED = "tiled";
+const FABRIC_MAPPING_ATLAS = "atlas";
+const FABRIC_MAP_LABELS = {
+  fabricMap: "Fabric swatch",
+  map: "Diffuse",
+  normalMap: "Normal",
+  roughnessMap: "Roughness",
+  metalnessMap: "Metalness",
+  displacementMap: "Displacement",
+};
+const FABRIC_MAP_SLOT_ORDER = ["fabricMap", "map", "normalMap", "roughnessMap", "metalnessMap", "displacementMap"];
 
 const DEFAULT_VIEW_OPTIONS = {
   viewPresetVersion: VIEW_OPTIONS_VERSION,
@@ -84,6 +99,10 @@ function makeLayerId() {
 
 function makeLayerAssetKey(layerId) {
   return `layer-model:${layerId}`;
+}
+
+function makeLayerMapAssetKey(layerId, slot) {
+  return `layer-map:${layerId}:${slot}`;
 }
 
 function makeLayerName(layers) {
@@ -167,6 +186,129 @@ function makeDownloadName(activeLayerName) {
   return `${baseName || "viewport"}-${timestamp}.png`;
 }
 
+function detectFabricMapSlot(fileName) {
+  const normalizedName = fileName.toLowerCase().replace(/[^a-z0-9]+/g, " ");
+  if (/\b(fabric|swatch|cloth|zoomed out)\b/.test(normalizedName)) return "fabricMap";
+  if (/\b(normal|nrm|nor)\b/.test(normalizedName)) return "normalMap";
+  if (/\b(roughness|rough|rgh)\b/.test(normalizedName)) return "roughnessMap";
+  if (/\b(metalness|metallic|metal)\b/.test(normalizedName)) return "metalnessMap";
+  if (/\b(displacement|height|disp)\b/.test(normalizedName)) return "displacementMap";
+  if (/\b(diffuse|albedo|basecolor|base color|color|colour)\b/.test(normalizedName)) return "map";
+  return null;
+}
+
+function isImageFile(file) {
+  return file?.type?.startsWith("image/") || /\.(avif|bmp|gif|jpe?g|png|webp)$/i.test(file?.name ?? "");
+}
+
+function getFabricSetLabel(fabricSet) {
+  const maps = fabricSet?.maps ?? {};
+  const mapCount = Object.values(maps).filter(Boolean).length;
+  const baseName = maps.map?.name ?? fabricSet?.name ?? "Texture set";
+  if (mapCount <= 1) return baseName;
+  return `${baseName} + ${mapCount - 1}`;
+}
+
+function hasFabricMap(fabricSet, slot) {
+  return Boolean(fabricSet?.maps?.[slot]);
+}
+
+function makeFabricSetFromFiles(fileList) {
+  const files = Array.from(fileList ?? []).filter(isImageFile);
+  if (files.length === 0) return null;
+
+  const maps = {};
+  files.forEach((file) => {
+    const detectedSlot = files.length === 1 ? "map" : detectFabricMapSlot(file.name);
+    const slot = detectedSlot ?? (!maps.map ? "map" : null);
+    if (!slot || maps[slot]) return;
+    maps[slot] = {
+      blob: file,
+      name: file.name,
+    };
+  });
+
+  if (!Object.values(maps).some(Boolean)) return null;
+  return {
+    mapping: files.length > 1 ? FABRIC_MAPPING_ATLAS : FABRIC_MAPPING_TILED,
+    name: getFabricSetLabel({ maps }),
+    maps,
+  };
+}
+
+function normalizeStoredFabricSet(record) {
+  if (!record) return null;
+  if (record.maps) {
+    const maps = {};
+    FABRIC_TEXTURE_SLOTS.forEach((slot) => {
+      const mapRecord = record.maps[slot];
+      if (!mapRecord?.blob) return;
+      maps[slot] = {
+        blob: mapRecord.blob,
+        name: mapRecord.name || "Stored texture",
+      };
+    });
+    if (!Object.values(maps).some(Boolean)) return null;
+    return {
+      mapping: record.mapping || FABRIC_MAPPING_ATLAS,
+      name: record.name || getFabricSetLabel({ maps }),
+      maps,
+    };
+  }
+  if (record.blob) {
+    return {
+      mapping: FABRIC_MAPPING_TILED,
+      name: record.name || "Stored fabric",
+      maps: {
+        map: {
+          blob: record.blob,
+          name: record.name || "Stored fabric",
+        },
+      },
+    };
+  }
+  return null;
+}
+
+function normalizeLayerFabricSet(fabricSet) {
+  if (!fabricSet?.maps) return null;
+  const maps = {};
+  FABRIC_TEXTURE_SLOTS.forEach((slot) => {
+    const map = fabricSet.maps[slot];
+    if (!map) return;
+    maps[slot] = {
+      blob: map.blob,
+      name: map.name || FABRIC_MAP_LABELS[slot],
+      assetKey: map.assetKey,
+    };
+  });
+  if (!Object.values(maps).some(Boolean)) return null;
+  return {
+    mapping: fabricSet.mapping || FABRIC_MAPPING_ATLAS,
+    name: fabricSet.name || getFabricSetLabel({ maps }),
+    maps,
+  };
+}
+
+function serializeFabricSet(fabricSet) {
+  const normalizedSet = normalizeLayerFabricSet(fabricSet);
+  if (!normalizedSet) return null;
+  const maps = {};
+  FABRIC_TEXTURE_SLOTS.forEach((slot) => {
+    const map = normalizedSet.maps[slot];
+    if (!map) return;
+    maps[slot] = {
+      name: map.name,
+      assetKey: map.assetKey,
+    };
+  });
+  return {
+    mapping: normalizedSet.mapping,
+    name: normalizedSet.name,
+    maps,
+  };
+}
+
 function normalizeViewOptions(options = {}) {
   return {
     ...DEFAULT_VIEW_OPTIONS,
@@ -211,6 +353,7 @@ function normalizeLayer(layer, fallbackIndex = 0) {
     isRemote: Boolean(layer?.isRemote),
     isPreview: Boolean(layer?.isPreview),
     assetKey: typeof layer?.assetKey === "string" ? layer.assetKey : null,
+    fabricSet: normalizeLayerFabricSet(layer?.fabricSet),
     visible: layer?.visible !== false,
     bakeFabric: Boolean(layer?.bakeFabric),
   };
@@ -227,12 +370,13 @@ function getStoredLayerMetadata() {
 }
 
 function serializeLayers(layers) {
-  return layers.map(({ id, name, isRemote, isPreview, assetKey, visible, bakeFabric }) => ({
+  return layers.map(({ id, name, isRemote, isPreview, assetKey, fabricSet, visible, bakeFabric }) => ({
     id,
     name,
     isRemote,
     isPreview,
     assetKey,
+    fabricSet: serializeFabricSet(fabricSet),
     visible,
     bakeFabric,
   }));
@@ -290,6 +434,36 @@ async function saveStoredAsset(key, file) {
   });
 }
 
+async function saveStoredFabricSet(fabricSet) {
+  const db = await openAssetDb();
+  const maps = {};
+  FABRIC_TEXTURE_SLOTS.forEach((slot) => {
+    const map = fabricSet.maps?.[slot];
+    if (!map?.blob) return;
+    maps[slot] = {
+      blob: map.blob,
+      name: map.name,
+      type: map.blob.type,
+      lastModified: map.blob.lastModified,
+    };
+  });
+
+  const record = {
+    mapping: fabricSet.mapping || FABRIC_MAPPING_TILED,
+    name: fabricSet.name || getFabricSetLabel(fabricSet),
+    maps,
+    savedAt: Date.now(),
+  };
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(ASSET_STORE_NAME, "readwrite");
+    const request = transaction.objectStore(ASSET_STORE_NAME).put(record, FABRIC_ASSET_KEY);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+    transaction.oncomplete = () => db.close();
+  });
+}
+
 function createPreviewForm() {
   const group = new THREE.Group();
   group.name = "Preview Form";
@@ -337,7 +511,7 @@ function createPreviewForm() {
   return group;
 }
 
-function disposeObject(root, materialSkipSet = new Set()) {
+function disposeObject(root, materialSkipSet = new Set(), textureSkipSet = new Set()) {
   root.traverse((node) => {
     if (!node.isMesh) return;
     node.geometry?.dispose();
@@ -351,7 +525,7 @@ function disposeObject(root, materialSkipSet = new Set()) {
     materials.filter(Boolean).forEach((material) => {
       if (materialSkipSet.has(material.uuid)) return;
       Object.values(material).forEach((value) => {
-        if (value?.isTexture) value.dispose();
+        if (value?.isTexture && !textureSkipSet.has(value.uuid)) value.dispose();
       });
       material.dispose();
     });
@@ -361,9 +535,10 @@ function disposeObject(root, materialSkipSet = new Set()) {
 function App() {
   const viewportRef = useRef(null);
   const layerFileInputRef = useRef(null);
-  const textureInputRef = useRef(null);
+  const mapSlotInputRef = useRef(null);
   const sceneApiRef = useRef(null);
   const pendingLayerUploadRef = useRef(DEFAULT_LAYER_ID);
+  const pendingMapSlotRef = useRef("map");
   const layersRef = useRef([]);
   const [sceneReady, setSceneReady] = useState(false);
   const [layers, setLayers] = useState(() => getStoredLayerMetadata());
@@ -431,7 +606,7 @@ function App() {
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.NeutralToneMapping;
     renderer.toneMappingExposure = viewOptions.exposure;
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
     container.appendChild(renderer.domElement);
 
     const pmremGenerator = new THREE.PMREMGenerator(renderer);
@@ -439,9 +614,9 @@ function App() {
     scene.environment = studioEnvironment;
 
     const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.07;
+    controls.enableDamping = false;
     controls.autoRotateSpeed = 1.2;
+    controls.addEventListener("change", invalidate);
 
     const baseKeyIntensity = 1.44;
     const baseFillIntensity = 0.74;
@@ -488,11 +663,14 @@ function App() {
       specularIntensity: 0.16,
       specularColor: new THREE.Color(0xffffff),
       envMapIntensity: 0.06,
+      displacementScale: 0,
       transparent: false,
       opacity: 1,
     });
     const sharedMaterials = new Set([fabricOverlayMaterial.uuid]);
+    const sharedTextureIds = new Set();
     const layerObjects = new Map();
+    const layerTextureSets = new Map();
     const loadTickets = new Map();
     const fabricBox = new THREE.Box3(
       new THREE.Vector3(-0.5, -0.5, -0.5),
@@ -501,6 +679,13 @@ function App() {
     const fabricBounds = new THREE.Vector3(1, 1, 1);
     let currentOptions = { ...viewOptions };
     let currentLayers = layers;
+    let currentFabricMapping = FABRIC_MAPPING_TILED;
+    let currentFabricMaps = {};
+    let needsRender = true;
+
+    function invalidate() {
+      needsRender = true;
+    }
 
     function resize() {
       const rect = container.getBoundingClientRect();
@@ -509,6 +694,7 @@ function App() {
       renderer.setSize(width, height, false);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
+      invalidate();
     }
 
     function getVisibleBox() {
@@ -536,6 +722,7 @@ function App() {
         ...getMeshStats(modelRoot),
         size,
       });
+      invalidate();
     }
 
     function frameScene() {
@@ -564,6 +751,7 @@ function App() {
       fabricBounds.copy(size);
       applyTileRepeat();
       updateStats();
+      invalidate();
     }
 
     function exportViewport(fileName) {
@@ -592,26 +780,59 @@ function App() {
     }
 
     function getFabricTextures() {
-      return [
-        fabricOverlayMaterial.map,
-        fabricOverlayMaterial.normalMap,
-        fabricOverlayMaterial.roughnessMap,
-        fabricOverlayMaterial.metalnessMap,
-      ].filter(Boolean);
+      const textures = FABRIC_TEXTURE_SLOTS.map((slot) => currentFabricMaps[slot]).filter(Boolean);
+      layerTextureSets.forEach((textureSet) => {
+        FABRIC_TEXTURE_SLOTS.forEach((slot) => {
+          if (textureSet.maps?.[slot]) textures.push(textureSet.maps[slot]);
+        });
+      });
+      return textures;
     }
 
     function applyTileRepeat() {
       const repeat = getTileRepeat();
       getFabricTextures().forEach((texture) => {
-        texture.repeat.set(repeat.x, repeat.y);
+        if (texture.userData.fabricMapping === FABRIC_MAPPING_TILED) {
+          texture.repeat.set(repeat.x, repeat.y);
+        } else {
+          texture.repeat.set(1, 1);
+        }
+        texture.offset.set(0, 0);
         texture.needsUpdate = true;
       });
     }
 
-    function prepareFabricTexture(texture, { colorSpace = THREE.NoColorSpace } = {}) {
+    function limitTexturePreviewSize(texture) {
+      const image = texture.image;
+      const width = image?.naturalWidth || image?.videoWidth || image?.width;
+      const height = image?.naturalHeight || image?.videoHeight || image?.height;
+      if (!image || !width || !height) return texture;
+      const maxDimension = Math.max(width, height);
+      if (maxDimension <= MAX_PREVIEW_TEXTURE_SIZE) return texture;
+
+      const scale = MAX_PREVIEW_TEXTURE_SIZE / maxDimension;
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(width * scale));
+      canvas.height = Math.max(1, Math.round(height * scale));
+      const context = canvas.getContext("2d");
+      if (!context) return texture;
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      texture.image = canvas;
+      return texture;
+    }
+
+    function prepareFabricTexture(
+      texture,
+      { colorSpace = THREE.NoColorSpace, mapping = currentFabricMapping } = {},
+    ) {
+      limitTexturePreviewSize(texture);
       texture.colorSpace = colorSpace;
-      texture.wrapS = THREE.RepeatWrapping;
-      texture.wrapT = THREE.RepeatWrapping;
+      texture.wrapS = mapping === FABRIC_MAPPING_ATLAS ? THREE.ClampToEdgeWrapping : THREE.RepeatWrapping;
+      texture.wrapT = mapping === FABRIC_MAPPING_ATLAS ? THREE.ClampToEdgeWrapping : THREE.RepeatWrapping;
+      texture.flipY = mapping !== FABRIC_MAPPING_ATLAS;
+      texture.userData.fabricMapping = mapping;
       texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
       texture.generateMipmaps = true;
       texture.minFilter = THREE.LinearMipmapLinearFilter;
@@ -619,20 +840,81 @@ function App() {
       return texture;
     }
 
-    function applyFabricTexture(texture) {
-      const nextTexture = prepareFabricTexture(texture, { colorSpace: THREE.SRGBColorSpace });
-      if (fabricOverlayMaterial.map) fabricOverlayMaterial.map.dispose();
-      fabricOverlayMaterial.map = nextTexture;
-      applyTileRepeat();
-      fabricOverlayMaterial.needsUpdate = true;
+    function refreshFabricLayers() {
+      layerObjects.forEach((record) => {
+        const layer = currentLayers.find((item) => item.id === record.object.userData.layerId);
+        if (layer) setLayerFabric(record.object, layer.bakeFabric);
+      });
     }
 
-    function applyFabricMap(slot, texture) {
-      const nextTexture = prepareFabricTexture(texture);
+    function applyFabricMap(slot, texture, options) {
+      const nextTexture = prepareFabricTexture(texture, options);
       if (fabricOverlayMaterial[slot]) fabricOverlayMaterial[slot].dispose();
       fabricOverlayMaterial[slot] = nextTexture;
+      currentFabricMaps[slot] = nextTexture;
+      sharedTextureIds.add(nextTexture.uuid);
       applyTileRepeat();
       fabricOverlayMaterial.needsUpdate = true;
+      invalidate();
+    }
+
+    function clearFabricMaps() {
+      FABRIC_TEXTURE_SLOTS.forEach((slot) => {
+        if (!fabricOverlayMaterial[slot]) return;
+        sharedTextureIds.delete(fabricOverlayMaterial[slot].uuid);
+        fabricOverlayMaterial[slot].dispose();
+        fabricOverlayMaterial[slot] = null;
+      });
+      currentFabricMaps = {};
+      fabricOverlayMaterial.displacementScale = 0;
+      fabricOverlayMaterial.needsUpdate = true;
+      invalidate();
+    }
+
+    function clearLayerTextureSet(layerId) {
+      const textureSet = layerTextureSets.get(layerId);
+      if (!textureSet) return;
+      FABRIC_TEXTURE_SLOTS.forEach((slot) => {
+        const texture = textureSet.maps?.[slot];
+        if (!texture) return;
+        sharedTextureIds.delete(texture.uuid);
+        texture.dispose();
+      });
+      if (textureSet.fabricSafeRoughnessMap) {
+        sharedTextureIds.delete(textureSet.fabricSafeRoughnessMap.uuid);
+        textureSet.fabricSafeRoughnessMap.dispose();
+      }
+      layerTextureSets.delete(layerId);
+    }
+
+    function setLayerTexture(layerId, slot, texture, options) {
+      const textureSet = layerTextureSets.get(layerId) ?? {
+        mapping: options?.mapping || FABRIC_MAPPING_ATLAS,
+        maps: {},
+      };
+      const nextTexture = prepareFabricTexture(texture, options);
+      if (textureSet.maps[slot]) {
+        sharedTextureIds.delete(textureSet.maps[slot].uuid);
+        textureSet.maps[slot].dispose();
+      }
+      textureSet.mapping = options?.mapping || textureSet.mapping;
+      textureSet.maps[slot] = nextTexture;
+      sharedTextureIds.add(nextTexture.uuid);
+      layerTextureSets.set(layerId, textureSet);
+      applyTileRepeat();
+      invalidate();
+      return textureSet;
+    }
+
+    function getLayerTextureSet(layerId) {
+      return layerTextureSets.get(layerId) ?? {
+        mapping: currentFabricMapping,
+        maps: currentFabricMaps,
+      };
+    }
+
+    function hasTextureMaps(textureSet) {
+      return Object.values(textureSet?.maps ?? {}).some(Boolean);
     }
 
     function getTextureImageSize(texture) {
@@ -724,6 +1006,39 @@ function App() {
       return new THREE.CanvasTexture(canvas);
     }
 
+    function createFabricSafeRoughnessMap(sourceTexture) {
+      const source = createCanvasFromTexture(sourceTexture);
+      if (!source) return null;
+
+      const { canvas, context, width, height } = source;
+      const imageData = context.getImageData(0, 0, width, height);
+      const { data } = imageData;
+
+      for (let index = 0; index < data.length; index += 4) {
+        const luminance = (data[index] * 0.2126 + data[index + 1] * 0.7152 + data[index + 2] * 0.0722) / 255;
+        const roughness = Math.round((0.82 + luminance * 0.18) * 255);
+        data[index] = roughness;
+        data[index + 1] = roughness;
+        data[index + 2] = roughness;
+        data[index + 3] = 255;
+      }
+
+      context.putImageData(imageData, 0, 0);
+      return prepareFabricTexture(new THREE.CanvasTexture(canvas), {
+        colorSpace: THREE.NoColorSpace,
+        mapping: FABRIC_MAPPING_ATLAS,
+      });
+    }
+
+    function getFabricRoughnessTexture(textureSet) {
+      if (!textureSet.maps?.roughnessMap) return null;
+      if (!textureSet.fabricSafeRoughnessMap) {
+        textureSet.fabricSafeRoughnessMap = createFabricSafeRoughnessMap(textureSet.maps.roughnessMap);
+        if (textureSet.fabricSafeRoughnessMap) sharedTextureIds.add(textureSet.fabricSafeRoughnessMap.uuid);
+      }
+      return textureSet.fabricSafeRoughnessMap;
+    }
+
     function applyGeneratedFabricUv(node) {
       const geometry = node.geometry;
       const position = geometry?.getAttribute("position");
@@ -773,15 +1088,84 @@ function App() {
       }
     }
 
+    function getMaterialArray(material) {
+      return Array.isArray(material) ? material.filter(Boolean) : material ? [material] : [];
+    }
+
+    function disposeMaterialOnly(material) {
+      getMaterialArray(material).forEach((item) => {
+        if (sharedMaterials.has(item.uuid)) return;
+        Object.values(item).forEach((value) => {
+          if (value?.isTexture && !sharedTextureIds.has(value.uuid)) value.dispose();
+        });
+        item.dispose();
+      });
+    }
+
+    function clearNodeAtlasMaterial(node) {
+      if (!node.userData.fabricAtlasMaterial) return;
+      disposeMaterialOnly(node.userData.fabricAtlasMaterial);
+      delete node.userData.fabricAtlasMaterial;
+    }
+
+    function createMappedMaterial(sourceMaterial, textureSet = getLayerTextureSet()) {
+      const maps = textureSet.maps ?? {};
+      const material = new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        roughness: maps.roughnessMap ? 1 : Math.max(currentOptions.fabricRoughness, 0.82),
+        metalness: maps.metalnessMap ? 1 : 0,
+        envMapIntensity: 0,
+      });
+      if (sourceMaterial?.side !== undefined) material.side = sourceMaterial.side;
+      if (sourceMaterial?.alphaTest !== undefined) material.alphaTest = sourceMaterial.alphaTest;
+      if (sourceMaterial?.transparent !== undefined) material.transparent = sourceMaterial.transparent;
+      if (sourceMaterial?.opacity !== undefined) material.opacity = sourceMaterial.opacity;
+      material.name = sourceMaterial?.name ? `${sourceMaterial.name} Fabric` : "Fabric material";
+
+      if (maps.fabricMap) material.map = maps.fabricMap;
+      else if (maps.map) material.map = maps.map;
+      if (maps.normalMap) {
+        material.normalMap = maps.normalMap;
+        material.normalScale?.set(1, 1);
+      }
+      if (maps.roughnessMap) material.roughnessMap = maps.roughnessMap;
+      if (maps.metalnessMap) material.metalnessMap = maps.metalnessMap;
+      if (maps.displacementMap) {
+        material.displacementMap = maps.displacementMap;
+        material.displacementScale = 0;
+      }
+      material.needsUpdate = true;
+      return material;
+    }
+
+    function applyAtlasMapsToNode(node, textureSet) {
+      clearNodeAtlasMaterial(node);
+      const originalMaterial = node.userData.originalMaterial ?? node.material;
+      const mappedMaterial = Array.isArray(originalMaterial)
+        ? originalMaterial.map((material) => createMappedMaterial(material, textureSet))
+        : createMappedMaterial(originalMaterial, textureSet);
+      node.userData.fabricAtlasMaterial = mappedMaterial;
+      node.material = mappedMaterial;
+    }
+
     function setLayerFabric(object, enabled) {
       object.updateWorldMatrix(true, true);
       object.traverse((node) => {
         if (!node.isMesh) return;
         if (enabled && currentOptions.fabricPreview) {
+          const textureSet = getLayerTextureSet(object.userData.layerId);
           node.userData.originalMaterial ??= node.material;
-          applyGeneratedFabricUv(node);
-          node.material = fabricOverlayMaterial;
+          if (hasTextureMaps(textureSet)) {
+            clearNodeAtlasMaterial(node);
+            restoreOriginalUv(node);
+            applyAtlasMapsToNode(node, textureSet);
+          } else {
+            clearNodeAtlasMaterial(node);
+            applyGeneratedFabricUv(node);
+            node.material = fabricOverlayMaterial;
+          }
         } else if (node.userData.originalMaterial) {
+          clearNodeAtlasMaterial(node);
           node.material = node.userData.originalMaterial;
           restoreOriginalUv(node);
         }
@@ -792,7 +1176,8 @@ function App() {
       const record = layerObjects.get(layerId);
       if (!record) return;
       modelRoot.remove(record.object);
-      disposeObject(record.object, sharedMaterials);
+      disposeObject(record.object, sharedMaterials, sharedTextureIds);
+      clearLayerTextureSet(layerId);
       layerObjects.delete(layerId);
     }
 
@@ -815,6 +1200,7 @@ function App() {
       frameScene();
       setLayerFabric(object, layer.bakeFabric);
       updateStats();
+      invalidate();
     }
 
     function loadLayer(layer) {
@@ -848,7 +1234,7 @@ function App() {
         layer.source,
         (gltf) => {
           if (loadTickets.get(layer.id) !== ticket) {
-            disposeObject(gltf.scene, sharedMaterials);
+            disposeObject(gltf.scene, sharedMaterials, sharedTextureIds);
             return;
           }
           setLayerObject(layer, gltf.scene);
@@ -886,8 +1272,14 @@ function App() {
 
     let animationFrame = 0;
     function renderLoop() {
-      controls.update();
-      renderer.render(scene, camera);
+      if (controls.autoRotate) {
+        controls.update();
+        needsRender = true;
+      }
+      if (needsRender) {
+        renderer.render(scene, camera);
+        needsRender = false;
+      }
       animationFrame = requestAnimationFrame(renderLoop);
     }
     renderLoop();
@@ -909,89 +1301,132 @@ function App() {
         front.intensity = baseFrontIntensity * options.lightIntensity;
         rim.intensity = baseRimIntensity * options.lightIntensity;
         ambient.intensity = baseAmbientIntensity * options.lightIntensity;
-        fabricOverlayMaterial.roughness = options.fabricRoughness;
-        fabricOverlayMaterial.metalness = options.fabricMetalness;
+        fabricOverlayMaterial.roughness = currentFabricMaps.roughnessMap ? 1 : options.fabricRoughness;
+        fabricOverlayMaterial.metalness = currentFabricMaps.metalnessMap ? 1 : options.fabricMetalness;
         fabricOverlayMaterial.sheen = options.fabricSheen;
-        fabricOverlayMaterial.normalScale.set(options.fabricNormalStrength, options.fabricNormalStrength);
+        const normalStrength = currentFabricMaps.normalMap ? 1 : options.fabricNormalStrength;
+        fabricOverlayMaterial.normalScale.set(normalStrength, normalStrength);
         applyTileRepeat();
         fabricOverlayMaterial.needsUpdate = true;
         layerObjects.forEach((record) => {
           const layer = currentLayers.find((item) => item.id === record.object.userData.layerId);
           if (layer) setLayerFabric(record.object, layer.bakeFabric);
         });
+        invalidate();
       },
-      loadFabricTexture(file, shouldGenerateNormalMap = true, shouldGenerateRoughnessMap = true) {
-        const url = URL.createObjectURL(file);
-        new THREE.TextureLoader().load(
-          url,
-          (texture) => {
-            const fabricTexture = texture;
-            const automaticNormalMap = shouldGenerateNormalMap
-              ? createAutomaticNormalMap(fabricTexture)
+      loadLayerFabricTextureSet(layerId, fabricSet) {
+        const loader = new THREE.TextureLoader();
+        const maps = fabricSet?.maps ?? {};
+        const entries = FABRIC_TEXTURE_SLOTS.map((slot) => [slot, maps[slot]?.blob]).filter(([, blob]) => blob);
+        const mapping = fabricSet?.mapping || FABRIC_MAPPING_ATLAS;
+
+        if (entries.length === 0) {
+          clearLayerTextureSet(layerId);
+          refreshFabricLayers();
+          return;
+        }
+
+        Promise.all(
+          entries.map(
+            ([slot, blob]) =>
+              new Promise((resolve, reject) => {
+                const url = URL.createObjectURL(blob);
+                loader.load(
+                  url,
+                  (texture) => {
+                    URL.revokeObjectURL(url);
+                    resolve([slot, texture]);
+                  },
+                  undefined,
+                  (error) => {
+                    URL.revokeObjectURL(url);
+                    reject(error);
+                  },
+                );
+              }),
+          ),
+        )
+          .then((loadedEntries) => {
+            clearLayerTextureSet(layerId);
+            loadedEntries.forEach(([slot, texture]) => {
+              setLayerTexture(layerId, slot, texture, {
+                colorSpace: slot === "map" || slot === "fabricMap" ? THREE.SRGBColorSpace : THREE.NoColorSpace,
+                mapping: slot === "fabricMap" ? FABRIC_MAPPING_TILED : mapping,
+              });
+            });
+            const record = layerObjects.get(layerId);
+            const layer = currentLayers.find((item) => item.id === layerId);
+            if (record && layer) setLayerFabric(record.object, layer.bakeFabric);
+            updateStats();
+            invalidate();
+          })
+          .catch((error) => {
+            console.error("Could not load layer texture set.", error);
+          });
+      },
+      loadFabricTextureSet(fabricSet) {
+        const loader = new THREE.TextureLoader();
+        const maps = fabricSet?.maps ?? {};
+        const entries = FABRIC_TEXTURE_SLOTS.map((slot) => [slot, maps[slot]?.blob]).filter(([, blob]) => blob);
+        const mapping = fabricSet?.mapping || FABRIC_MAPPING_TILED;
+
+        if (entries.length === 0) return;
+
+        Promise.all(
+          entries.map(
+            ([slot, blob]) =>
+              new Promise((resolve, reject) => {
+                const url = URL.createObjectURL(blob);
+                loader.load(
+                  url,
+                  (texture) => {
+                    URL.revokeObjectURL(url);
+                    resolve([slot, texture]);
+                  },
+                  undefined,
+                  (error) => {
+                    URL.revokeObjectURL(url);
+                    reject(error);
+                  },
+                );
+              }),
+          ),
+        )
+          .then((loadedEntries) => {
+            currentFabricMapping = mapping;
+            const loadedTextures = Object.fromEntries(loadedEntries);
+            const sourceTexture = loadedTextures.map;
+            const shouldGenerateMaps = mapping !== FABRIC_MAPPING_ATLAS;
+            const automaticNormalMap = shouldGenerateMaps && sourceTexture && !loadedTextures.normalMap
+              ? createAutomaticNormalMap(sourceTexture)
               : null;
-            const automaticRoughnessMap = shouldGenerateRoughnessMap
-              ? createAutomaticRoughnessMap(fabricTexture)
+            const automaticRoughnessMap = shouldGenerateMaps && sourceTexture && !loadedTextures.roughnessMap
+              ? createAutomaticRoughnessMap(sourceTexture)
               : null;
-            applyFabricTexture(fabricTexture);
-            if (automaticNormalMap) applyFabricMap("normalMap", automaticNormalMap);
-            if (automaticRoughnessMap) applyFabricMap("roughnessMap", automaticRoughnessMap);
-            layerObjects.forEach((record) => {
-              const layer = currentLayers.find((item) => item.id === record.object.userData.layerId);
-              if (layer) setLayerFabric(record.object, layer.bakeFabric);
-            });
-            URL.revokeObjectURL(url);
-          },
-          undefined,
-          () => URL.revokeObjectURL(url),
-        );
-      },
-      loadFabricNormalMap(file) {
-        const url = URL.createObjectURL(file);
-        new THREE.TextureLoader().load(
-          url,
-          (texture) => {
-            applyFabricMap("normalMap", texture);
-            layerObjects.forEach((record) => {
-              const layer = currentLayers.find((item) => item.id === record.object.userData.layerId);
-              if (layer) setLayerFabric(record.object, layer.bakeFabric);
-            });
-            URL.revokeObjectURL(url);
-          },
-          undefined,
-          () => URL.revokeObjectURL(url),
-        );
-      },
-      loadFabricRoughnessMap(file) {
-        const url = URL.createObjectURL(file);
-        new THREE.TextureLoader().load(
-          url,
-          (texture) => {
-            applyFabricMap("roughnessMap", texture);
-            layerObjects.forEach((record) => {
-              const layer = currentLayers.find((item) => item.id === record.object.userData.layerId);
-              if (layer) setLayerFabric(record.object, layer.bakeFabric);
-            });
-            URL.revokeObjectURL(url);
-          },
-          undefined,
-          () => URL.revokeObjectURL(url),
-        );
-      },
-      loadFabricMetalnessMap(file) {
-        const url = URL.createObjectURL(file);
-        new THREE.TextureLoader().load(
-          url,
-          (texture) => {
-            applyFabricMap("metalnessMap", texture);
-            layerObjects.forEach((record) => {
-              const layer = currentLayers.find((item) => item.id === record.object.userData.layerId);
-              if (layer) setLayerFabric(record.object, layer.bakeFabric);
-            });
-            URL.revokeObjectURL(url);
-          },
-          undefined,
-          () => URL.revokeObjectURL(url),
-        );
+
+            clearFabricMaps();
+            if (loadedTextures.map) {
+              applyFabricMap("map", loadedTextures.map, { colorSpace: THREE.SRGBColorSpace, mapping });
+            } else if (loadedTextures.fabricMap) {
+              applyFabricMap("map", loadedTextures.fabricMap, {
+                colorSpace: THREE.SRGBColorSpace,
+                mapping: FABRIC_MAPPING_TILED,
+              });
+            }
+            if (loadedTextures.normalMap) applyFabricMap("normalMap", loadedTextures.normalMap, { mapping });
+            if (loadedTextures.roughnessMap) applyFabricMap("roughnessMap", loadedTextures.roughnessMap, { mapping });
+            if (loadedTextures.metalnessMap) applyFabricMap("metalnessMap", loadedTextures.metalnessMap, { mapping });
+            if (loadedTextures.displacementMap) {
+              applyFabricMap("displacementMap", loadedTextures.displacementMap, { mapping });
+              fabricOverlayMaterial.displacementScale = FABRIC_DISPLACEMENT_SCALE;
+            }
+            if (automaticNormalMap) applyFabricMap("normalMap", automaticNormalMap, { mapping });
+            if (automaticRoughnessMap) applyFabricMap("roughnessMap", automaticRoughnessMap, { mapping });
+            refreshFabricLayers();
+          })
+          .catch((error) => {
+            console.error("Could not load fabric texture set.", error);
+          });
       },
     };
 
@@ -1004,12 +1439,13 @@ function App() {
       observer.disconnect();
       cancelAnimationFrame(animationFrame);
       sceneApiRef.current = null;
-      layerObjects.forEach((record) => disposeObject(record.object, sharedMaterials));
+      layerObjects.forEach((record) => disposeObject(record.object, sharedMaterials, sharedTextureIds));
       layerObjects.clear();
       fabricOverlayMaterial.map?.dispose();
       fabricOverlayMaterial.normalMap?.dispose();
       fabricOverlayMaterial.roughnessMap?.dispose();
       fabricOverlayMaterial.metalnessMap?.dispose();
+      fabricOverlayMaterial.displacementMap?.dispose();
       fabricOverlayMaterial.dispose();
       studioEnvironment.dispose();
       pmremGenerator.dispose();
@@ -1029,16 +1465,49 @@ function App() {
           readStoredAsset(FABRIC_ASSET_KEY),
           Promise.all(
             getStoredLayerMetadata().map(async (layer) => {
-              if (!layer.assetKey) return layer;
-              const storedAsset = await readStoredAsset(layer.assetKey);
-              if (!storedAsset?.blob) return layer;
-              return {
-                ...layer,
-                name: layer.name || storedAsset.name || "Stored layer",
-                source: URL.createObjectURL(storedAsset.blob),
-                isRemote: false,
-                isPreview: false,
-              };
+              let nextLayer = { ...layer };
+              if (layer.assetKey) {
+                const storedAsset = await readStoredAsset(layer.assetKey);
+                if (storedAsset?.blob) {
+                  nextLayer = {
+                    ...nextLayer,
+                    name: layer.name || storedAsset.name || "Stored layer",
+                    source: URL.createObjectURL(storedAsset.blob),
+                    isRemote: false,
+                    isPreview: false,
+                  };
+                }
+              }
+
+              const restoredFabricSet = normalizeLayerFabricSet(layer.fabricSet);
+              if (restoredFabricSet?.maps) {
+                const maps = {};
+                await Promise.all(
+                  FABRIC_TEXTURE_SLOTS.map(async (slot) => {
+                    const map = restoredFabricSet.maps[slot];
+                    if (!map?.assetKey) return;
+                    const storedMap = await readStoredAsset(map.assetKey);
+                    if (!storedMap?.blob) return;
+                    maps[slot] = {
+                      blob: storedMap.blob,
+                      name: map.name || storedMap.name || FABRIC_MAP_LABELS[slot],
+                      assetKey: map.assetKey,
+                    };
+                  }),
+                );
+                if (Object.values(maps).some(Boolean)) {
+                  nextLayer = {
+                    ...nextLayer,
+                    fabricSet: {
+                      mapping: restoredFabricSet.mapping,
+                      name: getFabricSetLabel({ maps }),
+                      maps,
+                    },
+                  };
+                }
+              }
+
+              return nextLayer;
             }),
           ),
         ]);
@@ -1050,21 +1519,26 @@ function App() {
           setSelectedLayerId((current) => (storedLayers.some((layer) => layer.id === current) ? current : storedLayers[0].id));
         }
 
-        if (storedFabric?.blob) {
-          setFabricTextureName(storedFabric.name || "Stored fabric");
-          setFabricTexture({
-            blob: storedFabric.blob,
-            name: storedFabric.name || "Stored fabric",
-          });
+        const storedFabricSet = normalizeStoredFabricSet(storedFabric);
+        if (storedFabricSet) {
+          setFabricTextureName(getFabricSetLabel(storedFabricSet));
+          setFabricTexture(storedFabricSet);
         } else {
           const response = await fetch(DEFAULT_FABRIC_URL);
           if (!response.ok) throw new Error(`Default fabric returned ${response.status}`);
           const blob = await response.blob();
-          setFabricTextureName(DEFAULT_FABRIC_NAME);
-          setFabricTexture({
-            blob,
+          const defaultFabricSet = {
+            mapping: FABRIC_MAPPING_TILED,
             name: DEFAULT_FABRIC_NAME,
-          });
+            maps: {
+              map: {
+                blob,
+                name: DEFAULT_FABRIC_NAME,
+              },
+            },
+          };
+          setFabricTextureName(DEFAULT_FABRIC_NAME);
+          setFabricTexture(defaultFabricSet);
         }
       } catch (error) {
         console.error("Could not restore uploaded files.", error);
@@ -1086,12 +1560,15 @@ function App() {
   useEffect(() => {
     layersRef.current = layers;
     sceneApiRef.current?.loadLayers(layers);
+    layers.forEach((layer) => {
+      sceneApiRef.current?.loadLayerFabricTextureSet(layer.id, layer.fabricSet);
+    });
     window.localStorage.setItem(LAYERS_STORAGE_KEY, JSON.stringify(serializeLayers(layers)));
   }, [layers]);
 
   useEffect(() => {
-    if (!sceneReady || !fabricTexture?.blob) return;
-    sceneApiRef.current?.loadFabricTexture(fabricTexture.blob, true, true);
+    if (!sceneReady || !fabricTexture?.maps) return;
+    sceneApiRef.current?.loadFabricTextureSet(fabricTexture);
   }, [fabricTexture, sceneReady]);
 
   useEffect(() => {
@@ -1128,6 +1605,7 @@ function App() {
           isRemote: false,
           isPreview: false,
           assetKey,
+          bakeFabric: false,
         };
       }),
     );
@@ -1137,22 +1615,107 @@ function App() {
     });
   }
 
-  function handleFabricFile(file) {
-    if (!file) return;
-    setFabricTextureName(file.name);
-    setFabricTexture({ name: file.name, blob: file });
-    saveStoredAsset(FABRIC_ASSET_KEY, file).catch((error) => {
-      console.error("Could not save fabric upload.", error);
+  function handleLayerModelFiles(fileList, layerId = pendingLayerUploadRef.current) {
+    const files = Array.from(fileList ?? []).filter((file) => file.name.toLowerCase().endsWith(".glb"));
+    if (files.length === 0) {
+      setLoadState({ status: "error", message: "Choose .glb files." });
+      return;
+    }
+    if (files.length === 1) {
+      handleLayerModelFile(files[0], layerId);
+      return;
+    }
+
+    const targetLayerId = layerId;
+    const nextLayers = files.map((file, index) => {
+      const id = index === 0 ? targetLayerId : makeLayerId();
+      const source = URL.createObjectURL(file);
+      const assetKey = makeLayerAssetKey(id);
+      saveStoredAsset(assetKey, file).catch((error) => {
+        console.error("Could not save layer upload.", error);
+      });
+      return {
+        ...DEFAULT_LAYER,
+        id,
+        name: file.name.replace(/\.glb$/i, ""),
+        source,
+        isRemote: false,
+        isPreview: false,
+        assetKey,
+        visible: true,
+        bakeFabric: false,
+      };
     });
+
+    setLayers((current) => {
+      const targetIndex = current.findIndex((layer) => layer.id === targetLayerId);
+      const insertIndex = targetIndex >= 0 ? targetIndex : current.length;
+      const targetLayer = current[targetIndex];
+      if (targetLayer && !targetLayer.isRemote && targetLayer.source) URL.revokeObjectURL(targetLayer.source);
+      return [
+        ...current.slice(0, insertIndex),
+        ...nextLayers,
+        ...current.slice(insertIndex + (targetIndex >= 0 ? 1 : 0)),
+      ];
+    });
+    setSelectedLayerId(targetLayerId);
+  }
+
+  function openMapSlotUpload(slot) {
+    pendingMapSlotRef.current = slot;
+    mapSlotInputRef.current?.click();
+  }
+
+  function handleLayerMapFile(slot, file, layerId = selectedLayerId) {
+    if (!slot || !file || !isImageFile(file)) return;
+    const assetKey = makeLayerMapAssetKey(layerId, slot);
+    setLayers((current) =>
+      current.map((layer) => {
+        if (layer.id !== layerId) return layer;
+        const currentFabricSet = normalizeLayerFabricSet(layer.fabricSet) ?? {
+          mapping: FABRIC_MAPPING_ATLAS,
+          name: "Layer maps",
+          maps: {},
+        };
+        const maps = {
+          ...currentFabricSet.maps,
+          [slot]: {
+            blob: file,
+            name: file.name,
+            assetKey,
+          },
+        };
+        return {
+          ...layer,
+          bakeFabric: true,
+          fabricSet: {
+            mapping: FABRIC_MAPPING_ATLAS,
+            name: getFabricSetLabel({ maps }),
+            maps,
+          },
+        };
+      }),
+    );
+    saveStoredAsset(assetKey, file).catch((error) => {
+      console.error("Could not save layer map upload.", error);
+    });
+  }
+
+  function handleMapSlotDrop(event, slot) {
+    event.preventDefault();
+    event.stopPropagation();
+    const file = Array.from(event.dataTransfer.files).find(isImageFile);
+    handleLayerMapFile(slot, file);
   }
 
   function handleDrop(event) {
     event.preventDefault();
     setIsDragging(false);
-    const file = Array.from(event.dataTransfer.files).find((item) =>
-      item.name.toLowerCase().endsWith(".glb"),
-    );
-    handleLayerModelFile(file, selectedLayer.id);
+    const files = Array.from(event.dataTransfer.files);
+    const modelFiles = files.filter((item) => item.name.toLowerCase().endsWith(".glb"));
+    if (modelFiles.length > 0) {
+      handleLayerModelFiles(modelFiles, selectedLayer.id);
+    }
   }
 
   function addLayer() {
@@ -1236,6 +1799,13 @@ function App() {
     updateTileSize(key, Number.isFinite(nextValue) ? nextValue : viewOptions[key]);
   }
   const selectedHasModel = Boolean(selectedLayer.source || selectedLayer.isPreview);
+  const selectedFabricSet = selectedLayer.fabricSet ?? fabricTexture;
+  const hasFabricSwatch = hasFabricMap(selectedFabricSet, "fabricMap");
+  const isFabricAtlas = selectedFabricSet?.mapping === FABRIC_MAPPING_ATLAS;
+  const isTileDisabled = isFabricAtlas && !hasFabricSwatch;
+  const hasRoughnessMap = hasFabricMap(selectedFabricSet, "roughnessMap");
+  const hasNormalMap = hasFabricMap(selectedFabricSet, "normalMap");
+  const hasMetalnessMap = hasFabricMap(selectedFabricSet, "metalnessMap");
 
   return (
     <main
@@ -1260,7 +1830,7 @@ function App() {
         {isDragging && (
           <div className="drop-layer">
             <Upload size={34} />
-            <span>Release to add GLB</span>
+            <span>Release to add</span>
           </div>
         )}
       </section>
@@ -1271,18 +1841,19 @@ function App() {
           className="hidden-input"
           type="file"
           accept=".glb,model/gltf-binary"
+          multiple
           onChange={(event) => {
-            handleLayerModelFile(event.target.files?.[0]);
+            handleLayerModelFiles(event.target.files);
             event.target.value = "";
           }}
         />
         <input
-          ref={textureInputRef}
+          ref={mapSlotInputRef}
           className="hidden-input"
           type="file"
           accept="image/*"
           onChange={(event) => {
-            handleFabricFile(event.target.files?.[0]);
+            handleLayerMapFile(pendingMapSlotRef.current, event.target.files?.[0]);
             event.target.value = "";
           }}
         />
@@ -1314,25 +1885,51 @@ function App() {
             </span>
             <span className="upload-text">
               <strong>Model</strong>
-              <small>{selectedHasModel ? selectedLayer.name : "Upload a .glb"}</small>
+              <small>{selectedHasModel ? selectedLayer.name : "Upload .glb files"}</small>
             </span>
             <Upload className="upload-action" size={16} />
           </button>
           <button
-            className={`upload-card ${fabricTextureName ? "filled" : ""}`}
+            className={`upload-card ${selectedLayer.fabricSet?.maps?.fabricMap ? "filled" : ""}`}
             type="button"
-            onClick={() => textureInputRef.current?.click()}
+            onClick={() => openMapSlotUpload("fabricMap")}
           >
             <span className="upload-icon">
               <Shirt size={20} />
             </span>
             <span className="upload-text">
               <strong>Fabric</strong>
-              <small>{fabricTextureName || "Upload an image"}</small>
+              <small>{selectedLayer.fabricSet?.maps?.fabricMap?.name || "Layer swatch"}</small>
             </span>
             <Upload className="upload-action" size={16} />
           </button>
         </div>
+
+        <section className="panel-block">
+          <span className="block-title">Selected layer maps</span>
+          <div className="map-slot-grid">
+            {FABRIC_MAP_SLOT_ORDER.map((slot) => {
+              const map = selectedLayer.fabricSet?.maps?.[slot];
+              return (
+                <button
+                  key={slot}
+                  className={`map-slot ${map ? "filled" : ""}`}
+                  type="button"
+                  onClick={() => openMapSlotUpload(slot)}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }}
+                  onDrop={(event) => handleMapSlotDrop(event, slot)}
+                >
+                  <FileImage size={15} />
+                  <span>{FABRIC_MAP_LABELS[slot]}</span>
+                  <small>{map?.name || "Drop image"}</small>
+                </button>
+              );
+            })}
+          </div>
+        </section>
 
         <section className="panel-block">
           <div className="block-head">
@@ -1414,7 +2011,7 @@ function App() {
           <div className="block-head">
             <span className="block-title">Fabric scale</span>
             <span className="block-meta">
-              {fabricRepeat.x.toFixed(1)} × {fabricRepeat.y.toFixed(1)} repeats
+              {isTileDisabled ? "UV atlas" : `${fabricRepeat.x.toFixed(1)} × ${fabricRepeat.y.toFixed(1)} repeats`}
             </span>
           </div>
           <label className="slider-row with-value">
@@ -1425,6 +2022,7 @@ function App() {
               max={TILE_SIZE_MAX}
               step={TILE_SIZE_STEP}
               value={viewOptions.fabricTileWidth}
+              disabled={isTileDisabled}
               onChange={(event) => updateTileSize("fabricTileWidth", Number(event.target.value))}
             />
             <input
@@ -1435,6 +2033,7 @@ function App() {
               max={TILE_SIZE_MAX}
               step={TILE_SIZE_STEP}
               value={tileInputs.fabricTileWidth}
+              disabled={isTileDisabled}
               onBlur={() => handleTileInputBlur("fabricTileWidth")}
               onChange={(event) => handleTileInputChange("fabricTileWidth", event.target.value)}
             />
@@ -1451,6 +2050,7 @@ function App() {
               max={MATERIAL_MAX}
               step={MATERIAL_STEP}
               value={viewOptions.fabricRoughness}
+              disabled={hasRoughnessMap}
               onChange={(event) =>
                 updateOption("fabricRoughness", clampMaterialValue(Number(event.target.value)))
               }
@@ -1463,6 +2063,7 @@ function App() {
               max={MATERIAL_MAX}
               step={MATERIAL_STEP}
               value={formatMaterialValue(viewOptions.fabricRoughness)}
+              disabled={hasRoughnessMap}
               onChange={(event) => {
                 const nextValue = Number(event.target.value);
                 if (Number.isFinite(nextValue)) {
@@ -1507,6 +2108,7 @@ function App() {
               max={NORMAL_STRENGTH_MAX}
               step={NORMAL_STRENGTH_STEP}
               value={viewOptions.fabricNormalStrength}
+              disabled={hasNormalMap}
               onChange={(event) =>
                 updateOption("fabricNormalStrength", clampNormalStrength(Number(event.target.value)))
               }
@@ -1519,6 +2121,7 @@ function App() {
               max={NORMAL_STRENGTH_MAX}
               step={NORMAL_STRENGTH_STEP}
               value={formatMaterialValue(viewOptions.fabricNormalStrength)}
+              disabled={hasNormalMap}
               onChange={(event) => {
                 const nextValue = Number(event.target.value);
                 if (Number.isFinite(nextValue)) {
@@ -1535,6 +2138,7 @@ function App() {
               max={MATERIAL_MAX}
               step={MATERIAL_STEP}
               value={viewOptions.fabricMetalness}
+              disabled={hasMetalnessMap}
               onChange={(event) =>
                 updateOption("fabricMetalness", clampMaterialValue(Number(event.target.value)))
               }
@@ -1547,6 +2151,7 @@ function App() {
               max={MATERIAL_MAX}
               step={MATERIAL_STEP}
               value={formatMaterialValue(viewOptions.fabricMetalness)}
+              disabled={hasMetalnessMap}
               onChange={(event) => {
                 const nextValue = Number(event.target.value);
                 if (Number.isFinite(nextValue)) {
