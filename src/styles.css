@@ -365,10 +365,26 @@ h1 {
   font-weight: 650;
 }
 
+.layer-name-button {
+  overflow: hidden;
+  cursor: pointer;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layer-name-button:hover {
+  background: var(--surface-hover);
+}
+
 .layer-name:focus {
   outline: none;
   border-color: var(--panel-border);
   background: rgba(0, 0, 0, 0.16);
+}
+
+.layer-name.editing {
+  cursor: text;
 }
 
 .pill-toggle {

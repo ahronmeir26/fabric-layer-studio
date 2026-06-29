@@ -556,6 +556,7 @@ function App() {
   });
   const [fabricTextureName, setFabricTextureName] = useState(DEFAULT_FABRIC_NAME);
   const [fabricTexture, setFabricTexture] = useState(null);
+  const [editingLayerId, setEditingLayerId] = useState(null);
 
   const selectedLayer = useMemo(
     () => layers.find((layer) => layer.id === selectedLayerId) ?? layers[0] ?? DEFAULT_LAYER,
@@ -1749,6 +1750,7 @@ function App() {
       const nextLayer = layers.find((layer) => layer.id !== layerId);
       return nextLayer?.id ?? DEFAULT_LAYER_ID;
     });
+    setEditingLayerId((current) => (current === layerId ? null : current));
   }
 
   function updateLayer(layerId, updates) {
@@ -1968,13 +1970,38 @@ function App() {
                     {layer.visible ? <Eye size={16} /> : <EyeOff size={16} />}
                   </button>
 
-                  <input
-                    className="layer-name"
-                    aria-label="Layer name"
-                    value={layer.name}
-                    onClick={(event) => event.stopPropagation()}
-                    onChange={(event) => updateLayer(layer.id, { name: event.target.value })}
-                  />
+                  {editingLayerId === layer.id ? (
+                    <input
+                      className="layer-name editing"
+                      aria-label="Layer name"
+                      autoFocus
+                      value={layer.name}
+                      onClick={(event) => event.stopPropagation()}
+                      onBlur={() => setEditingLayerId(null)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === "Escape") {
+                          event.currentTarget.blur();
+                        }
+                      }}
+                      onChange={(event) => updateLayer(layer.id, { name: event.target.value })}
+                    />
+                  ) : (
+                    <button
+                      className="layer-name layer-name-button"
+                      type="button"
+                      title="Double-click to rename"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setSelectedLayerId(layer.id);
+                      }}
+                      onDoubleClick={(event) => {
+                        event.stopPropagation();
+                        setEditingLayerId(layer.id);
+                      }}
+                    >
+                      {layer.name}
+                    </button>
+                  )}
 
                   <button
                     className={`pill-toggle ${layer.bakeFabric ? "on" : ""}`}
